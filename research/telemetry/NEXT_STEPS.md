@@ -1,124 +1,131 @@
-# What changed, and what to do next at the robot
+# Next steps — Week 2
 
-`README.md` in this directory is the full reference. This is the short version.
+Week 1 is done and the gate passed on both failure modes. See
+[`WEEK1_REPORT.md`](./WEEK1_REPORT.md) for what happened and
+[`README.md`](./README.md) for the tooling reference.
 
-## What changed
+You are running roughly a week and a half ahead of the proposal's 3 Aug anchor. Spend
+some of that on Week 2's schema freeze rather than rushing into the pilot — §5.1 is
+right that retrofitting telemetry synchronisation later is miserable.
 
-**New files**
+Week 2's deliverables, per the proposal: **reset automation, telemetry logging
+integrated, data schema frozen.**
 
-| File | What it does |
-|---|---|
-| `feetech_block.py` | One-transaction read of pos/vel/load/volt/temp/current (addr 56–70), shared timestamp. Both the logger and the robot subclass use it. |
-| `so_follower_telemetry.py` | SO-101 follower whose `observation.state` is 24-dim (pos, load, current, vel) instead of 6. |
-| `record_with_telemetry.py` | `lerobot-record` with that robot type registered. Zero edits to `src/lerobot/`. |
-| `truncate_state_step.py` | Slices `observation.state` back to 6 dims for the policy, so SmolVLA's input is unchanged. |
-| `gate_analysis.py` | Go/no-go analysis: grip-state features, slip-onset, matched-pair collision diff. |
-| `diagnose.py`, `scan_registers.py` | Servo alarm dump and empirical SRAM-register scan. |
+---
 
-**Changed**
+## 0. First, before anything else (~5 min)
 
-- `log_teleop_telemetry.py` — live `GRIP OK` / `NO GRIP` readout; single-keypress markers; `--replay-dataset` mode; block read moved to `feetech_block.py`.
-- `probe_bus.py` — enables torque (load/current read ~0 without it); refuses to run on an alarmed servo; `--hold` to energise only some joints.
-
-Nothing in `src/lerobot/` was modified.
-
-## Next steps at the robot
-
-Run everything from the repo root with the `lerobot` conda env active.
-
-### 0. Safety, before you touch anything
-
-`shoulder_lift` latched an overload alarm earlier. If any write fails with an empty
-error string, that's it again — unplug the **servo power** (not just USB), wait 5s,
-replug. `python research/telemetry/diagnose.py --port /dev/ttyACM0` shows the raw alarm
-byte. Move the arm somewhere the shoulder isn't cantilevered before enabling torque.
-
-### 1. Re-record the slip runs (~15 min)
-
-This is the one that failed last time. Watch the readout — it must say `GRIP OK`
-**before** you let the object slide, otherwise you're recording the aftermath again.
+`shoulder_pan` held ~12A for 2.3s during the `pair3` stall. Check it survived:
 
 ```bash
-python research/telemetry/log_teleop_telemetry.py \
-    --follower-port /dev/ttyACM0 --leader-port /dev/ttyACM1 \
-    --out research/telemetry/runs/slip_a.csv
+python research/telemetry/diagnose.py --port /dev/ttyACM0
 ```
 
-Per run: still ~3s → close on a smooth object until `GRIP OK` → hold 2s → lift →
-let it slide, pressing `s` **as it starts moving** → still ~3s → Ctrl-C.
-Do `slip_a`, `slip_b`, `slip_c`.
+Every servo should report `clean`. If `shoulder_pan` shows an alarm or its temperature
+is markedly higher than its neighbours, power-cycle and let it cool before continuing.
 
-### 2. Record one sweep episode to replay (~10 min)
+Also: order the two spare STS3215 units if that hasn't happened (proposal §9). Two
+alarm events in one week is the signal that lead times matter.
 
-Any trajectory that passes through the space where you'll put the obstacle.
+---
 
-```bash
-lerobot-record --robot.type=so101_follower --robot.port=/dev/ttyACM0 --robot.id=my_follower \
-    --teleop.type=so101_leader --teleop.port=/dev/ttyACM1 --teleop.id=my_leader \
-    --dataset.repo_id=${HF_USER}/sweep --dataset.single_task="sweep" \
-    --dataset.num_episodes=1 --dataset.push_to_hub=false
-```
+## 1. Decide what goes in the schema, then freeze it (~30 min)
 
-### 3. Replay it twice — obstacle and clear (~15 min)
+This is the one genuinely irreversible decision of the week. Everything recorded from
+here has to share a schema, or you have two incomparable corpora.
 
-Same commanded trajectory both times, so the only difference is the collision.
+**Currently in `so_follower_telemetry.py`:** `observation.state` is 24-dim —
+`[0:6] pos · [6:12] load · [12:18] current · [18:24] vel`.
 
-```bash
-# obstacle in the path
-python research/telemetry/log_teleop_telemetry.py --follower-port /dev/ttyACM0 \
-    --replay-dataset ${HF_USER}/sweep --replay-episode 0 \
-    --out research/telemetry/runs/pair1_obstacle.csv
+**Three candidates to add, all already fetched by the block read and discarded:**
 
-# path clear -- do not move anything else
-python research/telemetry/log_teleop_telemetry.py --follower-port /dev/ttyACM0 \
-    --replay-dataset ${HF_USER}/sweep --replay-episode 0 \
-    --out research/telemetry/runs/pair1_clear.csv
-```
+| Field | Addr | Case for including |
+|---|---|---|
+| `Status` | 65 | The servo's alarm byte. Labels taxonomy class `H1` (servo overload shutdown) automatically instead of by inference — and you've now hit it twice, so it will occur in the corpus. |
+| `Present_Voltage` | 62 | Supply sag was visible during the `pair3` stall (12.0→11.6V). A whole-arm collision signal that no single joint's load shows. |
+| `Present_Temperature` | 63 | Too slow for onset detection, but it's what explains failure-rate drift six weeks in — the §5.3 spec-sheet problem. |
 
-Repeat for `pair2_*` and `pair3_*`. Keep a hand near the power switch on the first
-obstacle run — the arm will push into it open-loop.
+Adding all three takes state to 42 dims. Cost on the wire is zero; they're in the same
+transaction. `TruncateStateStep(keep=6)` is unaffected either way, so the policy input
+does not change.
 
-### 4. Decide the gate (~5 min)
+My recommendation: **add all three.** They're free, the retrofit cost if you want them
+later is a full re-record, and `Status` in particular gives you a labelled hardware
+class for nothing.
 
-```bash
-python research/telemetry/gate_analysis.py research/telemetry/runs --plot
-```
+Once decided, record the layout in the difficulty spec sheet and don't change it again.
 
-- **Slip passes** if `slip_onset_drop` is large for slip runs and ~0 for clean.
-- **Collision passes** if the matched pairs report `CLEAR SIGNATURE`.
-- Then look at the plots. The criterion is still *visible by eye* — if it takes
-  statistics to find, it won't detect online at useful lead times.
+## 2. Verify the record loop holds 30 fps (~20 min)
 
-### 5. Only if the gate passes — telemetry recording
+The tight spot: two bus transactions per tick plus camera reads. If it can't hold 30
+fps with your camera setup, that's a decision to make **now**, not mid-corpus.
 
 ```bash
 python research/telemetry/record_with_telemetry.py \
     --robot.type=so101_follower_telemetry --robot.port=/dev/ttyACM0 --robot.id=my_follower \
+    --robot.cameras='{ wrist: {type: opencv, index_or_path: 0, width: 640, height: 480, fps: 30}, top: {type: opencv, index_or_path: 2, width: 640, height: 480, fps: 30}}' \
     --teleop.type=so101_leader --teleop.port=/dev/ttyACM1 --teleop.id=my_leader \
-    --dataset.repo_id=${HF_USER}/telemetry-test --dataset.single_task="test" \
-    --dataset.num_episodes=1 --dataset.push_to_hub=false
+    --dataset.repo_id=ben/telemetry-smoketest --dataset.single_task="smoke test" \
+    --dataset.num_episodes=1 --dataset.episode_time_s=20 --dataset.push_to_hub=false
 ```
 
-Watch for "record loop running slower than target FPS". Two bus transactions per tick
-plus cameras is the tight spot; if it warns, drop to 2 cameras or 20 fps and **decide
-before collecting the real corpus**, not during it.
+Note `--dataset.repo_id` needs a real `user/name`. `${HF_USER}` is unset in your shell,
+which is what produced the `PermissionError: '/sweep_...'` — an empty user makes the
+path absolute and it tries to write to the filesystem root.
 
-Then confirm the schema landed:
+Watch for "record loop running slower than target FPS". If it warns, drop to one camera
+or 20 fps and note which in the spec sheet. Then confirm the schema landed:
 
 ```bash
 python -c "
 from lerobot.datasets import LeRobotDataset
-d = LeRobotDataset('${HF_USER}/telemetry-test')
+d = LeRobotDataset('ben/telemetry-smoketest')
 print(d.features['observation.state']['shape'], d.features['action']['shape'])
-print(d.features['observation.state']['names'][:6])"
+print(d.features['observation.state']['names'])"
 ```
 
-Expect `(24,) (6,)` and the first six names ending in `.pos`. Layout is
-`[0:6] pos · [6:12] load · [12:18] current · [18:24] vel`.
+## 3. Camera rigidity (~30 min)
 
-## Still open
+Deferred from Week 1 and now due. §5.1 calls viewpoint drift the most common silent
+confound in this literature.
 
-- Gripper `Present_Load` clips at ±500 (`Max_Torque_Limit`, set in
-  `SOFollower.configure()`). Current doesn't clip and is the better grip channel.
-  Document as a platform constraint rather than raising the limit — that guard is what
-  protects the servo you've already alarmed once.
+Mount both cameras so they physically cannot move — tape or clamp the mounts, don't
+rely on friction. Photograph the reference view from each. Add a session-start check
+against those photographs to the lab log, and log the check every time.
+
+## 4. Reset automation (~half a day)
+
+§7 calls this the highest-leverage engineering investment available, and the arithmetic
+supports it: ~950 rollouts plus 180 demonstrations at ~1.5 min each is ~28 hours of
+robot time, and manual reset is most of the overhead.
+
+For T1 (cube → bowl) the cheapest useful version is a scripted return-to-home plus a
+fixed pick-up-and-replace routine, driven by the same open-loop replay path the
+collision pairs used — `log_teleop_telemetry.py --replay-dataset` already proves that
+works. Record one reset trajectory, replay it between episodes.
+
+Don't over-build it. If randomised object placement can't be automated, a scripted
+arm-reset plus manual object placement still removes most of the per-episode cost.
+
+---
+
+## Then: Week 3 pilot
+
+30 teleoperated demos on T1, fine-tune SmolVLA, measure the failure rate and tune it
+into the 40–60% band. Gate: **difficulty locked**.
+
+Two things to carry in from Week 1:
+
+- At n=30 the failure-rate estimate carries roughly ±18 points (§5.3). Land in band and
+  move on; don't burn days chasing a number the sample size can't resolve.
+- Prefer physical difficulty levers over checkpoint selection. An undertrained policy
+  fails by flailing, and Week 1 showed how easily an unrepresentative failure mode
+  produces a signature that doesn't generalise.
+
+## Open questions worth one run each
+
+- **Slip precursor.** In `slip_a` cycle 1, gripper current drifted 344→337 over 1.6s
+  before letting go. If that's micro-slip rather than thermal drift it would buy far
+  more lead time than the 0.3s measured. A deliberately slow slide settles it.
+- **`Goal_Position_2`** (addr 71, read-only) — unknown semantics, possibly the
+  interpolated setpoint. `scan_registers.py` would reveal whether it carries signal.
