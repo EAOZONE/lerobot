@@ -13,52 +13,58 @@ integrated, data schema frozen.**
 
 ---
 
-## 0. First, before anything else (~5 min)
+## 0. Servo health after the `pair3` stall — **DONE (25 Jul)**
 
-`shoulder_pan` held ~12A for 2.3s during the `pair3` stall. Check it survived:
+`shoulder_pan` held ~12A for 2.3s during the `pair3` stall; checked with
+`diagnose.py` and cleared to continue.
+
+Re-run it whenever a run ends in a stall, and at the start of each session:
 
 ```bash
 python research/telemetry/diagnose.py --port /dev/ttyACM0
 ```
 
-Every servo should report `clean`. If `shoulder_pan` shows an alarm or its temperature
-is markedly higher than its neighbours, power-cycle and let it cool before continuing.
+Because `Present_Temperature` is deliberately not in the recorded schema, this is also
+where session temperature gets captured. Note the per-servo temperatures in the spec
+sheet each session — that series is what explains failure-rate drift in Week 6+ (§5.3),
+and it is worthless unless started now while the arm is known-good.
 
-Also: order the two spare STS3215 units if that hasn't happened (proposal §9). Two
-alarm events in one week is the signal that lead times matter.
+Still outstanding: order the two spare STS3215 units (proposal §9). Two alarm events in
+one week is the signal that lead times matter.
 
 ---
 
-## 1. Decide what goes in the schema, then freeze it (~30 min)
+## 1. Schema — decided, verify it in the smoke test (~5 min)
 
-This is the one genuinely irreversible decision of the week. Everything recorded from
-here has to share a schema, or you have two incomparable corpora.
+This was the one genuinely irreversible decision of the week. Everything recorded from
+here shares this schema, or you have two incomparable corpora.
 
-**Currently in `so_follower_telemetry.py`:** `observation.state` is 24-dim —
-`[0:6] pos · [6:12] load · [12:18] current · [18:24] vel`.
+**DECIDED.** `observation.state` is 30-dim:
+`[0:6] pos · [6:12] load · [12:18] current · [18:24] vel · [24:30] volt`.
 
-**Three candidates to add, all already fetched by the block read and discarded:**
+Voltage is in as a **stall-severity indicator, not a collision trigger**. Checked
+against the Week 1 pairs: it tracked only the hard stall (corr +0.99 with current,
+−0.6V), while the light and moderate contacts showed no distinguishable sag and their
+largest excursions landed 3.5s and 7.2s from the actual contact. Clean runs swing
+0.3–0.4V unprompted. So it is corroboration for current, never a trigger on its own.
 
-| Field | Addr | Case for including |
-|---|---|---|
-| `Status` | 65 | The servo's alarm byte. Labels taxonomy class `H1` (servo overload shutdown) automatically instead of by inference — and you've now hit it twice, so it will occur in the corpus. |
-| `Present_Voltage` | 62 | Supply sag was visible during the `pair3` stall (12.0→11.6V). A whole-arm collision signal that no single joint's load shows. |
-| `Present_Temperature` | 63 | Too slow for onset detection, but it's what explains failure-rate drift six weeks in — the §5.3 spec-sheet problem. |
+`Status` (65) and `Present_Temperature` (63) are **out**. Both are fetched by the block
+read and discarded. Two consequences to be aware of:
 
-Adding all three takes state to 42 dims. Cost on the wire is zero; they're in the same
-transaction. `TruncateStateStep(keep=6)` is unaffected either way, so the policy input
-does not change.
+- Taxonomy class `H1` (servo overload shutdown) now has to be identified by hand rather
+  than read off the alarm byte. It is excluded from analysis anyway (§5.5), so a
+  session-level note in the lab log is sufficient.
+- Temperature drift can still be tracked, just not per-frame — take a reading at the
+  start and end of each session with `diagnose.py` and record it in the spec sheet.
+  That covers the §5.3 drift question without a schema column.
 
-My recommendation: **add all three.** They're free, the retrofit cost if you want them
-later is a full re-record, and `Status` in particular gives you a labelled hardware
-class for nothing.
+Record the layout in the difficulty spec sheet now and do not change it again.
 
-Once decided, record the layout in the difficulty spec sheet and don't change it again.
+## 2. Verify the record loop holds 30 fps — **DONE, passed** (~20 min)
 
-## 2. Verify the record loop holds 30 fps (~20 min)
-
-The tight spot: two bus transactions per tick plus camera reads. If it can't hold 30
-fps with your camera setup, that's a decision to make **now**, not mid-corpus.
+The tight spot was two bus transactions per tick plus camera reads. Measured at
+**29.95 Hz** with two cameras; no reduction needed. Re-run this if you change the
+camera count, resolution, or add a third camera.
 
 ```bash
 python research/telemetry/record_with_telemetry.py \
@@ -73,18 +79,36 @@ Note `--dataset.repo_id` needs a real `user/name`. `${HF_USER}` is unset in your
 which is what produced the `PermissionError: '/sweep_...'` — an empty user makes the
 path absolute and it tries to write to the filesystem root.
 
-Watch for "record loop running slower than target FPS". If it warns, drop to one camera
-or 20 fps and note which in the spec sheet. Then confirm the schema landed:
+**How to actually verify the rate.** The dataset's `timestamp` column is *synthetic* —
+`frame_index / fps` — so it always looks like a perfect 30 Hz and proves nothing. The
+record loop is wall-clock driven (`lerobot_record.py:282,358`), so the episode occupies
+a real `episode_time_s`, and the **frame count** is the measurement:
+
+    actual Hz = total_frames / episode_time_s
+
+A 20s episode yielding 599 frames is 29.95 Hz — kept up. The same episode at 20 Hz
+would yield ~400 frames. Also watch the console for
+`Record loop is running slower (X Hz) than the target FPS`, which catches individual
+slow frames that a healthy average would hide. If either says no, drop to one camera or
+20 fps and note which in the spec sheet.
+
+Then confirm the schema landed:
 
 ```bash
 python -c "
-from lerobot.datasets import LeRobotDataset
-d = LeRobotDataset('ben/telemetry-smoketest')
-print(d.features['observation.state']['shape'], d.features['action']['shape'])
-print(d.features['observation.state']['names'])"
+import json, glob
+d = sorted(glob.glob('/home/ben/.cache/huggingface/lerobot/ben/telemetry-smoketest_*'))[-1]
+i = json.load(open(d + '/meta/info.json'))
+print('robot_type:', i['robot_type'], '| frames:', i['total_frames'])
+print('actual Hz :', i['total_frames'] / 20)          # / your episode_time_s
+for k in ('observation.state', 'action'):
+    print(k, i['features'][k]['shape'])"
 ```
 
-## 3. Camera rigidity (~30 min)
+**Result (25 Jul):** 599 frames / 20s = **29.95 Hz** with two cameras and the 30-dim
+telemetry schema. Passed — no need to reduce cameras or fps.
+
+## 3. Camera rigidity and stable identity (~30 min)
 
 Deferred from Week 1 and now due. §5.1 calls viewpoint drift the most common silent
 confound in this literature.
@@ -92,6 +116,23 @@ confound in this literature.
 Mount both cameras so they physically cannot move — tape or clamp the mounts, don't
 rely on friction. Photograph the reference view from each. Add a session-start check
 against those photographs to the lab log, and log the check every time.
+
+**Address cameras by `/dev/v4l/by-id/` path, never by integer index.** Indices are
+assigned at plug time and shift between sessions — on this machine `/dev/video4` and
+`video5` appeared hours after `video0`–`video3`. If wrist and overhead silently swap
+indices mid-corpus you get viewpoint drift that is undetectable after the fact. The
+by-id names are tied to device serials:
+
+| device | by-id (capture node) |
+|---|---|
+| Logitech C920 | `usb-046d_HD_Pro_Webcam_C920_ECE7923F-video-index0` |
+| HHWei USB Camera | `usb-HHWei_Technology_Co.__Ltd._USB_Camera_HHW001-video-index0` |
+| icSpring | `usb-icSpring_icspring_camera_202404160005-video-index0` |
+
+Only `-video-index0` nodes are capture devices; `-video-index1` is metadata and will
+fail to open. Record which serial is `wrist` and which is `top` in the spec sheet
+alongside the reference photographs — that pairing is what makes the session-start
+check meaningful.
 
 ## 4. Reset automation (~half a day)
 

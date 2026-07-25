@@ -1,10 +1,10 @@
 #!/usr/bin/env python
 """Hide the telemetry tail of `observation.state` from the policy.
 
-`so_follower_telemetry` records a 24-dim `observation.state` (pos, load, current, vel).
+`so_follower_telemetry` records a 30-dim `observation.state` (pos, load, current, vel, volt).
 The detectors want all of it. SmolVLA must not have it, for two reasons:
 
-  - a 24-dim state no longer matches `lerobot/smolvla_base`'s pretrained state
+  - a 30-dim state no longer matches `lerobot/smolvla_base`'s pretrained state
     projection;
   - more importantly, a policy that consumes load and current is a different policy.
     RQ2 asks how telemetry-based detectors compare against model-internal ones *for a

@@ -1,9 +1,10 @@
 #!/usr/bin/env python
-"""SO-101 follower that records servo load, current and velocity alongside position.
+"""SO-101 follower that records servo load, current, velocity and voltage with position.
 
 `SOFollower.get_observation()` reads `Present_Position` only, so a recorded
 LeRobotDataset carries no force-adjacent signal at all. This subclass widens
-`observation.state` from 6 to 24 dims by adding load, current and velocity per motor.
+`observation.state` from 6 to 30 dims by adding load, current, velocity and supply
+voltage per motor.
 
 No change to `record_loop` is needed. `hw_to_dataset_features`
 (src/lerobot/utils/feature_utils.py:84-89) funnels every non-image observation feature
@@ -17,10 +18,11 @@ Ordering is grouped by FIELD, not by motor:
     [6:12]  <motor>.load     raw, signed, +/-1000 = +/-100% of Max_Torque_Limit
     [12:18] <motor>.current  raw, unsigned, ~6.5 mA/LSB
     [18:24] <motor>.vel      raw, signed
+    [24:30] <motor>.volt     raw decivolts (120 = 12.0V)
 
 Positions stay first and stay normalized, so `observation.state[:6]` is bit-identical
 to what plain `so101_follower` records. That is what lets TruncateStateStep hand
-SmolVLA an unchanged 6-dim input while detectors read the full 24.
+SmolVLA an unchanged 6-dim input while detectors read the full 30.
 
 Usage:
     lerobot-record --robot.type=so101_follower_telemetry --robot.port=/dev/ttyACM0 ...
@@ -43,8 +45,20 @@ from lerobot.utils.decorators import check_if_not_connected
 
 logger = logging.getLogger(__name__)
 
-# field name in block_read output -> suffix used in the observation/feature keys
-TELEMETRY_FIELDS = {"load": "load", "curr": "current", "vel": "vel"}
+# field name in block_read output -> suffix used in the observation/feature keys.
+#
+# `volt` is the servo's supply-rail reading in decivolts (120 = 12.0V). It is NOT a
+# sensitive collision detector -- measured on the Week 1 matched pairs, the light and
+# moderate contacts produced no distinguishable sag, and their largest voltage
+# excursions landed 3.5s and 7.2s away from the actual contact, while ordinary clean
+# runs swing 0.3-0.4V by themselves. It only tracked the hard stall, where it correlated
+# with current at +0.99 and sagged 0.6V.
+#
+# Kept because it is a severity indicator for stalls (taxonomy E6), costs nothing on the
+# wire -- the block read already fetches it -- and cannot be added later without
+# re-recording the whole corpus. Treat it as corroboration for current, never as a
+# trigger on its own.
+TELEMETRY_FIELDS = {"load": "load", "curr": "current", "vel": "vel", "volt": "volt"}
 
 
 @RobotConfig.register_subclass("so101_follower_telemetry")
@@ -55,14 +69,14 @@ class SOFollowerTelemetryConfig(RobotConfig, SOFollowerConfig):
 
 
 class SOFollowerTelemetry(SOFollower):
-    """SO follower whose observations carry load/current/velocity as well as position."""
+    """SO follower whose observations carry load/current/velocity/voltage as well as position."""
 
     config_class = SOFollowerTelemetryConfig
     name = "so_follower_telemetry"
 
     @property
     def _telemetry_ft(self) -> dict[str, type]:
-        # Grouped by field so the 24-dim vector slices cleanly: pos, load, current, vel.
+        # Grouped by field so the 30-dim vector slices cleanly: pos, load, current, vel, volt.
         return {
             f"{motor}.{suffix}": float for suffix in TELEMETRY_FIELDS.values() for motor in self.bus.motors
         }

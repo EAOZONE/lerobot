@@ -117,9 +117,14 @@ scored 11.6× on a pair with no contact at all.
 
 ## Recording a corpus with telemetry
 
-`so_follower_telemetry.py` widens `observation.state` from 6 to 24 dims
-(pos, load, current, vel — grouped by field, positions first). The `action` column is
-unchanged: 6 commanded joint positions.
+`so_follower_telemetry.py` widens `observation.state` from 6 to 30 dims
+(pos, load, current, vel, volt — grouped by field, positions first). The `action` column
+is unchanged: 6 commanded joint positions.
+
+Voltage is included as a stall-severity indicator, not a collision trigger. Measured on
+the Week 1 pairs it tracked only the hard stall (corr +0.99 with current, 0.6V sag);
+light and moderate contacts produced no distinguishable sag, and clean runs swing
+0.3–0.4V unprompted. See `WEEK1_REPORT.md`.
 
 > **If the detectors underperform, consider adding `Goal_Position` too.** It's the
 > servo's target register (addr 42, sign-magnitude bit 15) and sits just outside the

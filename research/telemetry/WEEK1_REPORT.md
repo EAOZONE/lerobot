@@ -79,8 +79,12 @@ separate collision from ordinary teleoperation — 450–565 vs 456–528 on loa
 166–195 on current, complete overlap. Normal motion loads joints exactly as hard as a
 collision does. What separates is *shape*: sustained excess against a matched control.
 
-**Bus voltage is a real, unused signal.** The 0.4V sag under stall was visible in
-`pair3`. It is already inside the block read and currently discarded.
+**Bus voltage is specific but not sensitive.** The 0.6V sag during the `pair3` stall
+correlated with current at **+0.99**. But on the light and moderate contacts there was
+no distinguishable sag at all — their largest voltage excursions landed 3.5s and 7.2s
+away from the actual contact — and ordinary clean runs swing 0.3–0.4V unprompted. So a
+large sag means something serious, but most collisions produce none. Recorded as a
+stall-severity indicator (taxonomy `E6`), never as a trigger on its own.
 
 ---
 
@@ -182,9 +186,9 @@ Nothing in `src/lerobot/` was modified.
    Two bus transactions plus cameras is the tight spot — decide fps/camera count
    *before* the corpus, not during.
 2. Run `diagnose.py` on `shoulder_pan` after the `pair3` stall.
-3. Consider adding `Status` (addr 65) and `Present_Voltage` to the recorded schema —
-   both already fetched and discarded; `Status` would label taxonomy class `H1`
-   automatically.
+3. Schema frozen at 30 dims (`pos · load · current · vel · volt`). `Status` (65) and
+   `Present_Temperature` (63) deliberately excluded — see `NEXT_STEPS.md` §1 for the
+   reasoning and the lab-log substitutes.
 4. Open question worth one run: is there a *precursor* before the slip collapse? In
    `slip_a` cycle 1 current drifted 344→337 over 1.6s before letting go. If that is
    micro-slip rather than thermal drift, it would buy considerably more lead time than
