@@ -155,6 +155,13 @@ spare STS3215 units if that has not happened yet (proposal §9).
   servo we have already alarmed once.
 - **n=3.** This is a signature test, not an accuracy estimate. No AUROC or lead-time
   distribution should be claimed from it.
+- **Every figure here is offline and whole-file** — `gate_analysis.py` scans complete runs
+  with full future context, while a deployed detector at time *t* sees only data up to
+  *t*. **Checked 26 Jul and the figures hold** (`causal_eval.py`, `NEXT_STEPS.md` §3):
+  causal slip separation is 316–365 against clean 0–6, and the matched-pair collision
+  ratios are unchanged under trailing rather than centred smoothing. The separations
+  reported above are an upper bound in principle; empirically the gap is small, because
+  the drop feature looks backwards by construction.
 
 ---
 
@@ -173,23 +180,76 @@ worked example of marker-lag failure).
 | `log_teleop_telemetry.py` | teleop or replay logging, live grip readout, keypress markers |
 | `gate_analysis.py` | grip-state features, slip onset, matched-pair contact test |
 | `plot_signatures.py` | the eyeball artifact |
+| `causal_eval.py` | trailing-window re-run of the above; window sweep; centred-vs-trailing check |
 | `probe_bus.py`, `diagnose.py`, `scan_registers.py` | bus/alarm/register diagnostics |
-| `so_follower_telemetry.py`, `record_with_telemetry.py`, `truncate_state_step.py` | Week 2 recording path (built, verified in software, not yet run on hardware) |
+| `so_follower_telemetry.py`, `record_with_telemetry.py`, `truncate_state_step.py` | Week 2 recording path — **verified on hardware 25 Jul** |
 
 Nothing in `src/lerobot/` was modified.
 
 ---
 
-## 7. Next
+## 7. Post-gate work, completed 25 July
 
-1. Verify the 30 fps record loop holds with cameras attached (`NEXT_STEPS.md` step 5).
-   Two bus transactions plus cameras is the tight spot — decide fps/camera count
-   *before* the corpus, not during.
-2. Run `diagnose.py` on `shoulder_pan` after the `pair3` stall.
-3. Schema frozen at 30 dims (`pos · load · current · vel · volt`). `Status` (65) and
-   `Present_Temperature` (63) deliberately excluded — see `NEXT_STEPS.md` §1 for the
-   reasoning and the lab-log substitutes.
-4. Open question worth one run: is there a *precursor* before the slip collapse? In
-   `slip_a` cycle 1 current drifted 344→337 over 1.6s before letting go. If that is
-   micro-slip rather than thermal drift, it would buy considerably more lead time than
-   0.3s. A deliberately slow slide would settle it.
+Three items that were listed as "next" when the gate closed, all now done. They are
+recorded here because they finish the Week 1 hardware story; everything still outstanding
+lives in [`NEXT_STEPS.md`](./NEXT_STEPS.md).
+
+**Servo health after the `pair3` stall — cleared.** `shoulder_pan` was checked with
+`diagnose.py` after holding ~12A for 2.3s and passed. That check is now a session-start
+ritual, and since `Present_Temperature` is not in the recorded schema, it is also where
+per-session temperature gets captured for the Week 6+ drift question.
+
+**Schema frozen at 30 dims.** `observation.state` is
+`[0:6] pos · [6:12] load · [12:18] current · [18:24] vel · [24:30] volt`. `Status` (65)
+and `Present_Temperature` (63) are read by the block read and deliberately discarded —
+`H1` is identified by hand from the lab log instead, and it is excluded from analysis
+anyway. This was the one irreversible decision of the week: everything recorded from here
+shares this layout, or there are two incomparable corpora.
+
+The freeze turned out to be more load-bearing than it looked. The study has since been
+restructured as a 2×2 over where the telemetry goes — into the policy, into a runtime
+monitor, both, or neither — and recording 30 dims while truncating to 6 at training time
+is what lets one demonstration corpus train both the position-only and the
+telemetry-conditioned policy. `TruncateStateStep(keep=6)` is now the switch between study
+arms rather than a hygiene measure.
+
+**Record loop holds 30 fps — 29.95 Hz measured.** 599 frames over a 20s episode with two
+cameras and the full 30-dim schema. The concern was two bus transactions per tick plus
+camera reads; no reduction in frame rate or camera count is required. Note that the
+dataset's `timestamp` column is synthetic (`frame_index / fps`) and always reads as a
+perfect 30 Hz — the frame count is the actual measurement. Re-run if the camera
+configuration changes.
+
+## 8. Still open from Week 1
+
+**Slip precursor.** In `slip_a` cycle 1, gripper current drifted 344→337 over 1.6s before
+letting go. If that is micro-slip rather than thermal drift it would buy considerably more
+lead time than the 0.3–1.1s measured — which matters, because at that lead time the
+recovery routine's own execution consumes a substantial fraction of the budget. A
+deliberately slow slide settles it.
+
+**Detection lead time is tighter than §1 implies, and smoothing spends it.** The causal
+re-run measured `slip_b` at +0.07s of lead unsmoothed, +0.03s at a 5-frame window, and
+−0.07s at 10 frames — i.e. firing *after* the keypress. The window that maximises class
+separation is not the window that maximises lead time. Choose the operating point on lead
+and report both. Note also that `slip_a`'s apparent +5.11s is the detector finding the
+first, unmarked slip while the keypress belongs to the second; it is the unprompted true
+positive from §1, not five seconds of lead, and should not be quoted as such.
+
+**Smoothing window has an upper bound nobody expected.** Swept 26 Jul: optimum is 10
+frames (0.33s), and beyond ~15 frames the rule stops arming entirely rather than degrading
+— a trailing mean longer than the grasp dilutes held current below the 150 threshold, so
+there is no grasp left to lose. `slip_b` drops out first, its grasp being ~0.37s. This
+inverts the expectation taken from adjacent work (0.78 AUROC at 500-sample windows), which
+concerns a learned autoencoder over a window and belongs to the D0+ rung, not to a
+conditioned threshold rule. **Record grasp duration per episode in the corpus** so this
+bound can be stated from data rather than from three runs.
+
+**Baseline-free collision detection — closed 26 Jul.** The matched-pair method that
+produced §1's collision numbers is an experimental technique, not a detector: at runtime
+there is no clear-run twin to diff against. A learned free-space current model
+(`freespace_model.py`) now replaces the matched control, and on 113s of no-contact
+training data it finds all three collisions — including the light `pair1` contact — on
+`shoulder_pan`, at 7.95s / 9.06s / 7.42s against matched-pair times of 7.95s / 8.86s /
+7.39s. `pair1_clear` stays silent. One false positive across four negatives, which n=4
+cannot quantify. See `NEXT_STEPS.md` §4; `E3` no longer depends on a twin trajectory.
