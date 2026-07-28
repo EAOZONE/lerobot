@@ -5,8 +5,10 @@ SO-101's Feetech STS3215 servos report a usable force-adjacent signal before fiv
 weeks are sunk into the study.
 
 Project status: [`DONE.md`](./DONE.md) records completed work and evidence;
-[`NEXT_STEPS.md`](./NEXT_STEPS.md) contains only unfinished gates and forward work. The
-latest detailed handoff is [`SESSION_2026-07-27.md`](./SESSION_2026-07-27.md).
+[`NEXT_STEPS.md`](./NEXT_STEPS.md) contains only unfinished gates and forward work.
+Weekly evidence is in [`WEEK1_REPORT.md`](./WEEK1_REPORT.md) and
+[`WEEK2_REPORT.md`](./WEEK2_REPORT.md). The latest detailed handoff is
+[`SESSION_2026-07-27.md`](./SESSION_2026-07-27.md).
 
 ## Where the data comes from
 

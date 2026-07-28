@@ -2,8 +2,8 @@
 
 This is the completed-work ledger for the VLA failure-detection study. Detailed evidence
 and caveats live in [`WEEK1_REPORT.md`](./WEEK1_REPORT.md),
-[`SESSION_2026-07-26.md`](./SESSION_2026-07-26.md), and
-[`SESSION_2026-07-27.md`](./SESSION_2026-07-27.md).
+[`WEEK2_REPORT.md`](./WEEK2_REPORT.md), [`SESSION_2026-07-26.md`](./SESSION_2026-07-26.md),
+and [`SESSION_2026-07-27.md`](./SESSION_2026-07-27.md).
 
 ## Week 1 feasibility gate — passed 25 July 2026
 
@@ -169,3 +169,57 @@ Artifacts:
 - `models/freespace_b.npz`
 - `runs/pair4_scores.parquet`
 - `PAIR4_HOLDOUT_RESULT.md`
+
+## `Goal_Position_2` hypothesis eliminated — 28 July 2026
+
+- Two obstacle-free replays of trajectory B recorded with register 71 in the existing block
+  transaction; external commands byte-identical across 649 frames.
+- Register 71 reads a constant 0 on every motor in every frame of both runs.
+- Maximum |Δgoal2| through the wrist-reversal transient that drives the pair4-clear false
+  alarm is 0.0 ticks.
+- The servo's internal/interpolated setpoint therefore cannot explain repeat-dependent
+  current variation, and the remaining candidates (friction, controller state, thermal
+  state) are not observable from the bus.
+- Confirms rollout-level calibration as the only route, rather than an additional feature.
+
+Artifacts:
+
+- `analyze_goal2.py`
+- `runs/clear_goal2_a.csv`
+- `runs/clear_goal2_b.csv`
+
+Confirmed directly on hardware the same day with `probe_goal2.py`: at a nonzero standstill
+pose (all six motors 710–3692 ticks) register 71 read 0 on every motor, and 292 samples
+over 10 s of motion produced one distinct value per motor: 0. This used LeRobot's
+per-register `sync_read`, a different code path from the block read, so two independent
+reads agree while the same path returns valid `Present_Position` values. The register is
+not misread; it is not written. `verify_block_read` could not have caught this — its
+30-tick `goal2` tolerance passes a 0-versus-0 agreement silently.
+
+**The hypothesis is closed. No further `goal2` work is outstanding.**
+
+## D0r frozen and trajectory C pre-registered — 28 July 2026
+
+- Model and calibration procedure frozen in
+  [`D0R_FROZEN_SPEC.md`](./D0R_FROZEN_SPEC.md) with reference file hashes at commit
+  `51494b82`.
+- Procedure frozen, fitted model explicitly not: the deployable model is refit on corpus
+  training data, and no development `.npz` is eligible.
+- Operating point declared as per-rollout conformal at α=0.05 primary and α=0.10 secondary;
+  frame percentiles are inadmissible as an operating point.
+- Minimum calibration size stated: 19 independent clear rollouts at α=0.05, 9 at α=0.10.
+- Corpus annotation fields required for calibration specified, including the rule that a
+  "clear" rollout is verified from video and matched telemetry, never inferred from
+  detector silence.
+- Trajectory C pre-registered in
+  [`TRAJECTORY_C_PROTOCOL.md`](./TRAJECTORY_C_PROTOCOL.md): primary pass condition,
+  ≥150-tick physical ground truth, abstention accounting, post-hoc rules, and the analysis
+  commands written before the data exists.
+- C separated from the false-alarm claim: a matched pair is a sensitivity check, and the
+  per-rollout false-alarm rate comes from the corpus calibration split only.
+
+Artifacts:
+
+- `D0R_FROZEN_SPEC.md`
+- `TRAJECTORY_C_PROTOCOL.md`
+- `probe_goal2.py`

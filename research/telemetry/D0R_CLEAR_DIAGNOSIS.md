@@ -97,8 +97,9 @@ The original B, clear replay, and obstacle replay align best at zero frame lag f
 velocity, and load. Their commanded goals are exact, and wrist positions differ by only
 about one tick at the largest current differences. This rules out a shifted CSV replay.
 The remaining variation comes from motor-controller dynamics that are not fully determined
-by the externally logged goal sequence—likely the internal interpolated setpoint, velocity
-profile, friction, and thermal state.
+by the externally logged goal sequence—velocity profile, friction, and thermal state.
+The internal interpolated setpoint was the fourth candidate here and has since been
+eliminated; see "Internal setpoint eliminated" below.
 
 The causal ten-frame trailing mean turns a roughly four-frame normal current burst into an
 approximately ten-frame threshold episode. Three-frame persistence cannot reject it:
@@ -178,6 +179,74 @@ At those development-only floors, neither clear run crosses, while obstacle peak
 This demonstrates ample mechanical margin and supports calibration as the immediate
 problem. It is not a valid accuracy result: the two clear runs were used to choose the
 floors, and two runs cannot estimate a publishable false-alarm budget.
+
+## Internal setpoint eliminated — 28 July 2026
+
+The strongest remaining physical hypothesis was that repeat-dependent current comes from
+the servo's internal interpolated setpoint, which the externally logged `goal_pos` trace
+cannot observe. Feetech exposes a read-only `Goal_Position_2` at register 71, inside the
+existing block read: two extra bytes, no extra bus transaction, no schema change.
+
+Trajectory B was replayed twice with no obstacle and register 71 logged alongside current
+in the same transaction (`clear_goal2_a.csv`, `clear_goal2_b.csv`; 649 frames, external
+commands byte-identical, timestamps within 5 ms).
+
+**Register 71 reads a constant 0 on every motor in every frame of both runs.**
+
+| joint | goal2 range A/B | frames equal | p99 \|Δgoal2\| | p99 \|Δcurrent\| |
+|---|---:|---:|---:|---:|
+| `shoulder_pan` | 0/0 | 100.0% | 0.0 | 22.5 |
+| `shoulder_lift` | 0/0 | 100.0% | 0.0 | 56.6 |
+| `elbow_flex` | 0/0 | 100.0% | 0.0 | 38.6 |
+| `wrist_flex` | 0/0 | 100.0% | 0.0 | 17.0 |
+| `wrist_roll` | 0/0 | 100.0% | 0.0 | 14.0 |
+
+At the largest paired wrist-current divergence — 11.302–11.603 s, trailing-mean Δcurrent
+11.5, inside the same reversal transient that produces the dominant pair4-clear false
+alarm — the maximum |Δgoal2| is 0.0 ticks. The register cannot explain the transient even
+locally.
+
+The read is aimed correctly: LeRobot's control table places `Goal_Position_2` at (71, 2)
+(`src/lerobot/motors/feetech/tables.py:91`) and the block read spans 56–72. This is a
+firmware fact, not an addressing error. Note that `verify_block_read` cannot establish
+this, because its 30-tick `goal2` tolerance passes a 0-versus-0 agreement silently.
+
+### Confirmed on hardware, 28 July 2026
+
+`probe_goal2.py` read the register directly at a nonzero standstill pose, through
+LeRobot's per-register `sync_read` rather than the block read's sub-address extraction:
+
+| motor | `Present_Position` | `Goal_Position` | `Goal_Position_2` |
+|---|---:|---:|---:|
+| `shoulder_pan` | 2094 | 0 | **0** |
+| `shoulder_lift` | 710 | 0 | **0** |
+| `elbow_flex` | 3692 | 0 | **0** |
+| `wrist_flex` | 2726 | 0 | **0** |
+| `wrist_roll` | 2137 | 0 | **0** |
+| `gripper` | 1489 | 0 | **0** |
+
+All six motors held clearly nonzero positions and register 71 read 0 on every one. A
+further 292 samples over 10 s of motion produced exactly one distinct value per motor: 0.
+
+Two independent read paths therefore agree, and the same `sync_read` path returns sensible
+values for `Present_Position`, so the register is not being misread — it is not being
+written.
+
+One honest limitation of the standstill probe: `Goal_Position` (register 42) also read 0,
+meaning no goal had been written since power-up, so an interpolated setpoint would have had
+nothing to track during the watch. That is why the replay evidence above remains the primary
+result — in `clear_goal2_a/b.csv` goals were actively written at 30 Hz and the arm was under
+load and moving, and register 71 was still flat across all 649 frames. The probe closes the
+read-path loophole; the replays close the physics.
+
+`analyze_goal2.py` also prints a second table comparing cross-replay current prediction
+from `goal_pos` against `goal2` (+71% to +200% worse). That is a null control, not a
+finding: a constant input collapses the ridge fit to the training mean.
+
+**Consequence.** The unexplained variation is friction, controller state, and thermal
+state. None is observable from the bus, and no further commanded-side feature can recover
+it. This removes the "find the missing feature" route entirely and leaves rollout-level
+calibration — the Required correction below — as the only path.
 
 ## Temperature is plausible but not identified
 
