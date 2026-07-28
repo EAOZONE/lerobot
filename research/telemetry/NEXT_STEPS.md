@@ -1,384 +1,350 @@
-# Next steps — Week 2
+# Next steps
 
-Week 1 passed the gate on both failure modes. Background:
-[`WEEK1_REPORT.md`](./WEEK1_REPORT.md) for the gate result,
-[`SESSION_2026-07-26.md`](./SESSION_2026-07-26.md) for the causal re-evaluation and the
-free-space model, [`README.md`](./README.md) for the tooling reference.
+Completed infrastructure has moved to [`DONE.md`](./DONE.md). This file contains only
+unfinished work, ordered by dependency. Research framing and accumulated evidence are in
+[`Research.md`](./Research.md), [`vla-failure-detection.md`](./vla-failure-detection.md),
+and the dated session logs.
 
-You are running roughly a week and a half ahead of the proposal's 3 Aug anchor. Spend it
-on Week 2 infrastructure rather than rushing the pilot — §5.1 is right that retrofitting
-telemetry synchronisation later is miserable.
+## Current gates
 
----
+| order | gate | requires robot | status |
+|---:|---|:---:|---|
+| 1 | redesign arbitrary-pose recovery path | partly | **safety blocker** |
+| 2 | validate redesigned reset with 10 consecutive repeats | yes | blocked by gate 1 |
+| 3 | diagnose D0r cross-trajectory false positives | partly | primary hold-out failed |
+| 4 | T1 pilot and difficulty calibration | yes | blocked on task objects |
+| 5 | labeling/schema preparation for the rollout corpus | no | start during pilot |
 
-## The study was reframed after Week 1 — read this first
-
-The revised proposal and idea doc turn this from a detector benchmark into a **2×2 over
-where the free current channel goes**. Two independent choices — does the *policy* see the
-telemetry, and does a *monitor* see it — crossed:
-
-| | No detection | With detection |
-|---|---|---|
-| **Policy sees 6 dims** | **Arm 1** — baseline | **Arm 2** — monitoring |
-| **Policy sees 30 dims** | **Arm 3** — conditioning | **Arm 4** — both |
-
-- **Arm 1** — reference success rate, and the source of the labelled failure corpus.
-  Difficulty is calibrated here and nowhere else.
-- **Arm 2** — the original project. Carries the whole detector ladder and the closed-loop
-  experiment.
-- **Arm 3** — SmolVLA fine-tuned on the full 30-dim observation, no detectors. End-to-end
-  success rate and failure composition only. Marginal cost: one fine-tune plus ~120
-  rollouts (~6 robot hours), scheduled Week 11 when the robot is otherwise idle.
-- **Arm 4** — the interaction cell. If the conditioned policy already modulates grip from
-  current, the monitor may have nothing left to catch. Optional, and the most novel cell.
-
-**This costs almost nothing extra because the schema is already 30 dims and truncates to 6
-at training time.** One demonstration corpus trains both policies; the expensive component
-— 180 teleoperated episodes — is paid once. `TruncateStateStep(keep=6)` is the **arm
-switch**: present in the Arm 1/2 pipeline, deliberately absent in Arm 3's.
-
-### Two rules the factorial imposes
-
-Both are easy to violate by accident and neither is recoverable after the fact.
-
-- **Difficulty is calibrated once, on Arm 1, then frozen.** Arm 3 will land at a different
-  failure rate. Do not re-tune it back into band — its rate is a *result*, not a parameter.
-- **Episode budget is held constant in policy execution time, not wall-clock time.**
-  Recovery burns seconds; a fixed wall-clock cap gives Arm 2 less policy time than Arm 1
-  and makes a null result uninterpretable.
-
-### Where the prior-art correction left things
-
-Proprioceptive monitoring of learned policies is established (arXiv 2509.26308), as are
-force-conditioned policies (TA-VLA, FACTR 2) and IL failure detection (FAIL-Detect,
-Rewind-IL). The contribution is a *cross-literature comparison*, not a discovered signal.
-The practical inheritance was FACTR 2's free-space subtraction, now built and measured —
-see the session log.
+Do not run the unattended reset soak until gate 1 is resolved. The trajectory-B hold-out
+is complete; preserve its failed primary result while improving D0r on training and
+calibration data only.
 
 ---
 
-## Status
+## 1. Redesign arbitrary-pose recovery before the reset exit test
 
-| # | item | status |
-|---|---|---|
-| — | servo health ritual, schema freeze, 30 fps verification | done 25 Jul |
-| — | causal re-evaluation of the Week 1 analysis | done 26 Jul — **passed** |
-| — | free-space current model (D0r) | done 26 Jul — **3/3 collisions, no matched control** |
-| 1 | reset automation, built as the recovery routine | **todo — do first** |
-| 2 | online D0 + duration-only baseline + detector interface | **todo** |
-| 3 | trajectory hold-out for D0r | **todo — cheapest confidence gain available** |
+The current reset enters its recorded path by moving only `shoulder_lift`, then aligning
+the other joints. Hardware testing showed why this is not a general safety rule. A single
+joint rotation does not mean Cartesian "up": the gripper follows an arc whose direction
+depends on the entire arm configuration. From some release or failure poses that arc can
+move the gripper sideways, downward, into the table, or through a task object.
 
-Item 2 needs no robot. Items 1 and 3 need the robot but nothing to manipulate. The
-ordering keeps the material order off the critical path.
+**Treat the current lift-first entry as experimental. Do not run it unattended and do not
+count it as the final recovery path.** The five-repeat soak only validates the older poses
+that happened to be exercised; it does not establish safe recovery from arbitrary rollout
+states.
 
-Run everything from the `lerobot` conda env (`conda activate lerobot`) at the repo root.
-Scripts marked **(to write)** do not exist yet — the command is the interface to build
-against, not something that works today.
+### Required recovery sequence
 
-| § | script | exists? |
-|---|---|---|
-| 0 | `diagnose.py` | yes |
-| 1 | `recovery.py` | **to write** |
-| 2 | `detectors.py` | **to write** |
-| 3 | `log_teleop_telemetry.py` + `freespace_model.py` | yes |
+Build and validate this sequence before repeating the soak:
 
-## Materials — still outstanding
+1. Halt by writing measured present position as the new goal.
+2. Flush the policy's queued action chunk.
+3. Replay a bounded buffer of recent commanded positions in reverse, returning along the
+   path by which the arm entered the task area.
+4. From that retracted state, transition through one or more validated clearance
+   waypoints.
+5. Join and replay the recorded return-home path.
+6. Reopen the gripper and reinvoke the policy from the episode start state.
+7. Abort on excessive following error, current, timeout, or workspace-limit violation.
 
-**Blocked on materials, not setup.** Teleoperation is verified end to end. Week 3 needs
-the task objects, so order them now (§5.2/§5.3 imply the list):
+Reverse replay is the first safety mechanism, not proof of collision freedom: an object
+may have moved, a slip may change what the gripper carries, and the original path may
+already include contact. Limit the history, monitor it, and stop before replaying through
+the detected fault itself.
 
-- **Two spare STS3215 servos** (§9). Two latched alarms in one week is the signal that
-  lead times matter.
-- **T1** — a ~2–3 cm cube, and a bowl.
-- **T2** — cylindrical markers in **two surface finishes**, smooth plastic *and*
-  rubber-gripped, since friction is the slip lever and §5.5 wants a deliberately slippery
-  variant to generate `E2` at volume as a separate stratum. Plus a cup with adjustable rim
-  height.
-- **T3** — a target block and 3 distractors at **two contrast levels**: obviously
-  different (red among blue) and near-identical (red among maroon). That pair is what
-  dials semantic failure rate without changing anything else.
+### Planning options, cheapest first
 
-Buying both variants of T2 and T3 now makes Week 3's difficulty tuning a one-session job
-rather than a re-order.
+1. **Validated waypoint library.** Divide the task workspace into a small number of
+   regions and record a safe retract/return path for each. Select by current joint pose or
+   end-effector region. This is likely sufficient for the fixed tabletop tasks.
+2. **Cartesian clearance path.** Use forward/inverse kinematics to raise the end effector
+   to a known collision-free height, then move laterally and descend into the home path.
+   Validate every IK solution for joint limits and continuity.
+3. **Collision-aware motion planning.** Build a table/robot geometry model and plan from
+   the measured state to the reset-path entrance. Use this if waypoint coverage becomes
+   brittle or the task geometry changes frequently.
 
----
+Do not replace the current lift-first rule with another unverified joint-space linear
+interpolation. A path is acceptable only after checking the end-effector sweep and link
+clearances from the range of poses autonomous failures actually produce.
 
-## 0. Session ritual — established, run every session
+### Information the runtime must retain
+
+- a timestamped ring buffer of commands actually sent to the follower;
+- the action-chunk boundary so queued future actions can be discarded;
+- current measured joint pose and, once available, forward-kinematic end-effector pose;
+- detector trigger time, score, and likely fault type;
+- which recovery path/waypoints were selected;
+- current/load/tracking-error telemetry throughout recovery.
+
+### Validation ladder
+
+1. Plot or simulate candidate paths from a grid of representative task poses.
+2. Execute at reduced speed with no task objects and an operator at the power switch.
+3. Repeat with static task objects in their allowed start regions.
+4. Test representative slip, collision, and awkward-release poses individually.
+5. Only then run the unattended 10-reset soak.
+
+Pass criteria must include minimum gripper/table clearance, minimum link/object clearance,
+joint-limit margin, maximum tracking error/current, and zero manual intervention. Record
+these quantities rather than relying only on visual judgment.
+
+### Final reset exit test
+
+The existing soak log has five repeats and predates this redesign. After a safe entry path
+has been implemented, the exit criterion is ten consecutive resets with minimal manual
+intervention using the redesigned code.
+
+Run the health check first:
 
 ```bash
 python research/telemetry/diagnose.py --port /dev/ttyACM0
 ```
 
-Prints the raw alarm byte per servo (the `scservo` SDK names only bits 1/2/4/8/32, so
-anything else surfaces as an empty error string) plus per-servo temperature. A latched
-servo rejects every write until the **power supply** is cycled — unplugging USB is not
-enough. Run it at session start and after any run that ends in a stall.
-
-Because `Present_Temperature` is deliberately not in the recorded schema, this is also
-where session temperature gets captured. Note it in the spec sheet each session — that
-series is what explains failure-rate drift in Week 6+ (§5.3), and it is worthless unless
-started now while the arm is known-good. It is also the only handle on whether the D0r
-floor drifts thermally.
-
-**Frozen schema, for reference.** `observation.state` is 30-dim:
-`[0:6] pos · [6:12] load · [12:18] current · [18:24] vel · [24:30] volt`. Verify any new
-dataset carries it:
+Then run the full soak, with the workspace clear and a hand near the power switch for the
+first repeat:
 
 ```bash
-python -c "
-import json, glob
-d = sorted(glob.glob('/home/ben/.cache/huggingface/lerobot/ben/telemetry-smoketest_*'))[-1]
-i = json.load(open(d + '/meta/info.json'))
-print('robot_type:', i['robot_type'], '| frames:', i['total_frames'])
-for k in ('observation.state', 'action'):
-    print(k, i['features'][k]['shape'])"
-```
-
-Expect `observation.state (30,)` and `action (6,)`. Anything else means the wrapper robot
-type did not register and the episode is not corpus-compatible.
-
----
-
-## 1. Reset automation, built as the recovery routine (~half a day)
-
-§7 calls this the highest-leverage engineering investment available, and the arithmetic
-supports it: ~1,070 rollouts plus 180 demonstrations at ~1.5 min each is ~28 hours of
-robot time before overhead, and manual reset is most of it.
-
-**Build it once and use it twice.** The revised design specifies the closed-loop recovery
-routine precisely, and it is nearly the same machinery as a between-episode reset:
-
-1. **Halt by writing present position as goal.** Not by ceasing to send actions — a
-   position-controlled servo keeps driving toward its last goal, which is the mechanism
-   behind the 12A `pair3` stall. Not by disabling torque, which drops the arm under
-   gravity.
-2. Flush the queued action chunk.
-3. Retract by replaying recent commanded positions in reverse.
-4. Return to the episode start pose. Deliberate: the policy was trained on episodes
-   beginning near home, so resuming mid-trajectory measures out-of-distribution behaviour
-   rather than recovery.
-5. Reopen the gripper, re-invoke the policy. At most 2 retries per rollout.
-
-Steps 1, 4 and 5 are exactly what a reset needs. Write them as one module now and the
-Week 12–13 closed-loop experiment inherits a tested implementation.
-
-**Run** — record the home pose and one reset trajectory with the existing logger, then
-drive them with `recovery.py` **(to write)**:
-
-```bash
-# teleoperate to the episode start pose and a short retract path; hold still, then stop
-python research/telemetry/log_teleop_telemetry.py \
-    --follower-port /dev/ttyACM0 --leader-port /dev/ttyACM1 \
-    --out research/telemetry/runs/reset_home.csv
-```
-
-```bash
-# halt semantics on their own, arm parked wherever it is -- verify current drops and the
-# arm neither sags nor keeps driving. Do this before anything that moves.
-python research/telemetry/recovery.py halt --port /dev/ttyACM0
-
-# full routine, no policy attached
-python research/telemetry/recovery.py reset --port /dev/ttyACM0 \
-    --home research/telemetry/runs/reset_home.csv --retract-frames 30
-
-# what Weeks 12-13 will call: 10 consecutive resets, unattended
 python research/telemetry/recovery.py reset --port /dev/ttyACM0 \
     --home research/telemetry/runs/reset_home.csv --repeat 10 \
     --log research/telemetry/runs/reset_soak.csv
 ```
 
-**Exit criterion** (§7 of the proposal): 10 consecutive resets with minimal manual
-intervention. The soak log is also the check that repeated resets are not heating the
-gravity-loaded `shoulder_lift` — run `diagnose.py` immediately after it, since that joint
-is the one that latched an alarm in Week 1.
+Immediately capture post-soak health and temperature:
+
+```bash
+python research/telemetry/diagnose.py --port /dev/ttyACM0
+```
+
+Record:
+
+- number of completed resets;
+- any manual intervention or clearance timeout;
+- start/end `shoulder_lift` temperature;
+- whether the gripper, wrist, or pan approached the table or an obstacle;
+- peak shoulder current in the soak log.
+
+Pass only if all ten complete without unsafe motion or manual repositioning. If it fails,
+preserve the log and fix the specific phase before repeating; do not loosen a safety gate
+merely to obtain 10/10.
 
 ---
 
-## 2. Detector interface — online D0, duration baseline, D0+ features
+## 2. Diagnose D0r cross-trajectory false positives
 
-The ladder, cheapest first, so the paper can ask what each extra unit of compute buys:
+The pre-registered A→B hold-out is complete and failed specificity. Read
+[`PAIR4_HOLDOUT_RESULT.md`](./PAIR4_HOLDOUT_RESULT.md) and
+[`D0R_CLEAR_DIAGNOSIS.md`](./D0R_CLEAR_DIAGNOSIS.md) before changing the model.
+Trajectory B is now observed development data and can never be presented as an untouched
+hold-out again.
 
-| rung | detector | cost | status |
-|---|---|---|---|
-| — | **duration-only trivial baseline** | none | todo — ~20 lines |
-| **D0** | conditioned current test (grip state + commanded motion + smoothed window) | free | rule validated causally; needs the shared interface |
-| **D0r** | free-space current residual | low | done — `freespace_model.py` |
-| **D0+** | telemetry classifier — logistic regression / small MLP | near-free | features writable now, needs corpus to train |
-| D1 | action-chunk consistency (chunk at *t* vs *t+k*) | cheap, no extra forward passes | Week 10 |
-| D2 | perturbation disagreement | *N*× inference | Week 11 |
-| D3 | supervised latent probe on SmolVLA's action-expert latents | moderate | Week 11 |
-| D_fusion | best proprioceptive ⊕ best model-internal | — | Week 11 |
-| D_oracle | human labels, upper bound for the closed loop | — | Week 12–13 |
+What is established:
 
-**The point of this module is one interface.** Every rung emits a per-frame score through
-the same API, so Week 11 is purely additive rather than an integration scramble.
+- the collision residual transfers strongly across trajectories and onto
+  `shoulder_lift`/`elbow_flex`;
+- the A model fires repeatedly on B clear, peaking at 4.32× p99;
+- the B model clears B but fires on A clear;
+- pair4 clear remains inside the combined A+B command coverage, so its remaining false
+  alerts are not feature extrapolation;
+- ordinary independent-replay residuals on pair4 clear reach 31.3 ticks on wrist flex
+  and 18.4 on wrist roll, above the frame-p99 floors of 14.9 and 8.3;
+- the thresholding unit is therefore wrong: correlated frame percentiles do not control
+  false alarms over an independent rollout;
+- training and evaluation sessions differed by roughly 5–8 °C, but trajectory and
+  temperature shifted together, so causality is unresolved.
 
-**The duration-only baseline is not a joke.** If a latent probe cannot beat a detector
-fitted to elapsed time alone, that is worth knowing and reviewers will ask.
+Next work, in order:
 
-**D0 is settled, mechanically.** Window 5–10 frames, measured not guessed; separation
-316–365 against clean 0–6; the *command* condition is what carries it. See the session log
-for why the window has a hard upper bound.
+1. Before bulk collection, record two clear replays with the updated logger. New CSVs
+   include `goal2.*`, the servo's read-only internal/interpolated setpoint candidate from
+   register 71. Confirm that it moves, is repeatable, and explains the wrist reversal
+   current better than the external `goal_pos.*` trace. This costs two bytes in the same
+   block transaction and does not alter the 30-dimensional policy schema.
+2. Collect at least 19 independent clear calibration rollouts for a finite
+   distribution-free 5% per-rollout false-alarm threshold. Vary trajectories, direction,
+   payload state, and session; do not record 19 replays of one command trace and call them
+   coverage.
+3. Include autonomous successful rollouts as hard negatives in that calibration split.
+4. Run `freespace_model.py calibrate --alpha 0.05` on those clear files. It now uses one
+   maximum causal residual vector per independent rollout and refuses underpowered
+   calibration rather than silently using frame percentiles.
+5. Keep the commanded-feature coverage diagnostic enabled. It abstains on unsupported
+   motion instead of turning model extrapolation into a contact claim.
+6. Test session-offset correction using no-contact calibration data only. Temperature may
+   be analyzed as a covariate but not claimed causal from A/B alone.
+7. Pre-register a new trajectory C after the model and operating procedure are frozen.
+   C—not B—becomes the next untouched generalization test.
 
-**D0+ needs labelled data**, so training is Week 7–8 — but feature extraction can be
-written now against the Week 1 CSVs. It is also where the long-window hypothesis from the
-industrial AD literature belongs, since that result concerns a learned autoencoder over a
-window rather than a conditioned rule.
+### Immediate `goal2` experiment
 
-**Run** — `detectors.py` **(to write)**:
+Clear the workspace, then replay trajectory B twice with no obstacle. The updated block
+read logs raw `goal2.*` register values alongside current in the same transaction:
 
 ```bash
-# every implemented rung scores the same runs, one row per detector
-python research/telemetry/detectors.py score research/telemetry/runs/*.csv \
-    --detectors duration,d0,d0r \
-    --model research/telemetry/models/freespace.npz \
-    --out research/telemetry/runs/scores.parquet
+python research/telemetry/log_teleop_telemetry.py \
+    --follower-port /dev/ttyACM0 \
+    --replay-csv research/telemetry/runs/freespace_b_01.csv \
+    --out research/telemetry/runs/clear_goal2_a.csv
 
-# AUPRC, false alarms per run, lead time vs the keypress markers
-python research/telemetry/detectors.py report research/telemetry/runs/scores.parquet
-
-# D0+ feature extraction -- writable now, trainable in Week 7-8
-python research/telemetry/detectors.py features research/telemetry/runs/*.csv \
-    --window 10 --out research/telemetry/runs/features.parquet
+python research/telemetry/log_teleop_telemetry.py \
+    --follower-port /dev/ttyACM0 \
+    --replay-csv research/telemetry/runs/freespace_b_01.csv \
+    --out research/telemetry/runs/clear_goal2_b.csv
 ```
 
-On the Week 1 data `report` will produce numbers with n=3 per class and no honest
-confidence interval. That is expected — the job now is to fix the *interface* and confirm
-the scores are causal, not to produce results. Treat any AUPRC printed at this stage as a
-smoke test.
+Analyze the matched pair:
 
-**Settle the metric before writing evaluation code.** The two revised docs disagree: the
-proposal says AUROC plus TPR at fixed false-alarm rate, the idea doc says PR curves, AUPRC,
-and "fraction of failures detected early enough to run the recovery routine". At ~50%
-failure with sparse onset frames, AUPRC is the right call and the operational metric is the
-one that answers RQ4. Pick it once so every rung reports the same thing.
+```bash
+python research/telemetry/analyze_goal2.py \
+    research/telemetry/runs/clear_goal2_a.csv \
+    research/telemetry/runs/clear_goal2_b.csv
+```
+
+The analyzer verifies identical external commands, checks whether register 71 is dynamic,
+and compares cross-replay current prediction from external `goal_pos.*` against internal
+`goal2.*` motion. If wrist-roll p99 underprediction falls materially with `goal2`, test it
+as a development-only commanded/controller-state feature using whole-run splits. If it
+does not, retain the current conclusion: unobserved friction/controller-state variability
+requires rollout-level calibration rather than another feature fitted to pair4.
+
+Current development diagnostic (not a performance result):
+
+```bash
+python research/telemetry/freespace_model.py calibrate \
+    --model research/telemetry/models/freespace_ab_coverage.npz --alpha 0.05 \
+    research/telemetry/runs/pair1_clear.csv research/telemetry/runs/pair4_clear.csv
+```
+
+With only these two clear runs, the command prints their rollout maxima and correctly
+declines to write a calibrated model.
+
+Do not solve the failed hold-out by selecting a new percentile on pair4. A post-hoc sweep
+may explain sensitivity, but the recorded primary verdict remains failed.
 
 ---
 
-## 3. Trajectory hold-out for D0r (one session, no task objects)
+## 3. Obtain and lock Week 3 task materials
 
-The cheapest thing that would materially raise confidence in D0r, and it should ride along
-with the next robot session.
+- Two spare STS3215 servos.
+- T1: one 2–3 cm cube and a bowl.
+- T2: cylindrical markers in smooth plastic and rubber-gripped finishes; cup with
+  adjustable rim height.
+- T3: target block plus three distractors at two contrast levels: obvious and
+  near-identical.
 
-All three collision pairs replay the **same** recorded episode — one trajectory, one joint,
-one corner of the workspace. So D0r has been asked "can you spot a contact on this one
-motion" three times, not "can you spot contacts". Corpus rollouts never repeat a
-trajectory.
+Before collecting demonstrations:
 
-**Do:** collect free-space data on a *different* sweep (trajectory B), and record a fresh
-matched pair — obstacle and clear — on trajectory B as well. Then fit on A, test on B, and
-fit on B, test on A. Also vary the joint: every contact so far is `shoulder_pan`.
-
-```bash
-# trajectory B free-space, then a matched pair on the same trajectory
-python research/telemetry/log_teleop_telemetry.py --follower-port /dev/ttyACM0 \
-    --leader-port /dev/ttyACM1 --out research/telemetry/runs/freespace_b_01.csv
-
-python research/telemetry/log_teleop_telemetry.py --follower-port /dev/ttyACM0 \
-    --replay-dataset ${HF_USER}/sweep_b --replay-episode 0 \
-    --out research/telemetry/runs/pair4_clear.csv
-python research/telemetry/log_teleop_telemetry.py --follower-port /dev/ttyACM0 \
-    --replay-dataset ${HF_USER}/sweep_b --replay-episode 0 \
-    --out research/telemetry/runs/pair4_obstacle.csv
-
-# cross-trajectory: fit on A, score B
-python research/telemetry/freespace_model.py fit research/telemetry/runs/freespace_0*.csv \
-    --out research/telemetry/models/freespace_a.npz
-python research/telemetry/freespace_model.py eval --model research/telemetry/models/freespace_a.npz \
-    research/telemetry/runs/pair4_clear.csv research/telemetry/runs/pair4_obstacle.csv
-```
-
-**Pre-register the floor percentile before running the eval.** p99 was chosen on the
-existing seven runs by sweeping and picking the best answer; repeating that on new data
-would make the result meaningless. Write the choice down first.
-
-Keep collisions at `pair1`/`pair2` intensity. The `pair3` exemplar is captured and does not
-need repeating — it drew ~12A for 2.3s, which is how these servos burn out.
-
-Two more that need no extra session, if the opportunity arises: a second payload mass (a
-heavier object may read as contact), and refitting on a *later* session's free-space data
-to see whether the floor drifts thermally.
+- tape and photograph both camera mounts;
+- define exact object start regions and randomization bounds;
+- create a difficulty spec sheet with object identifiers and reference photographs;
+- decide where session temperature and camera-alignment checks are logged.
 
 ---
 
-## Then: Week 3 pilot
+## 4. T1 pilot and difficulty lock
 
-30 teleoperated demos on T1, fine-tune SmolVLA, measure the failure rate and tune it into
-the 40–60% band. Gate: **difficulty locked**.
+Collect 30 randomized T1 demonstrations with the frozen 30-dimensional telemetry schema.
+Train the Arm 1 six-dimensional policy with `TruncateStateStep(keep=6)`, then run roughly
+30 autonomous evaluations.
 
-Three things to carry in:
+Target a 40–60% Arm 1 failure rate. At n=30 the estimate is roughly ±18 percentage points,
+so stop after at most three tuning iterations once it lands in band. Prefer physical
+difficulty changes—randomization radius and object geometry—over deliberately
+undertraining the policy.
 
-- At n=30 the failure-rate estimate carries roughly ±18 points (§5.3). Land in band and
-  move on; don't burn days chasing a number the sample size can't resolve.
-- Prefer physical difficulty levers over checkpoint selection. An undertrained policy fails
-  by flailing, and Week 1 showed how easily an unrepresentative failure mode produces a
-  signature that doesn't generalise. You want *crisp* failures.
-- **Decide multi-task versus per-task here.** The idea doc prefers a single multi-task
-  policy, because the learned detectors (D3 especially) are policy-specific and splitting
-  the corpus across three networks leaves too few failure instances to fit a latent probe.
-  Train both ways on T1 and compare failure rate *and failure character* before committing.
+During the pilot, compare multi-task-compatible and per-task organization. Prefer one
+multi-task policy if failure character remains crisp, because later learned detectors are
+policy-specific and splitting failures across three networks weakens D3.
 
-Whatever difficulty is locked here is locked for **Arm 1 only**. Arm 3's failure rate is a
-result.
+Once Arm 1 difficulty is locked:
 
-```bash
-# Arm 1 policy: TruncateStateStep(keep=6) IN the pipeline
-lerobot-train --policy.path=lerobot/smolvla_base \
-    --dataset.repo_id=ben/t1-cube-bowl --steps=20000 \
-    --output_dir=outputs/train/t1_arm1
+- do not retune it for Arm 3;
+- do not change objects, bounds, camera pose, or instructions without a new condition;
+- record the exact checkpoint and action-chunk configuration;
+- measure policy inference latency at the real control-loop settings.
 
-# Arm 3 policy: same data, same seed, truncation REMOVED -- Week 6, not now
-```
+---
 
-Run both from the same config with one flag between them, not two hand-edited copies.
+## 5. Prepare the rollout corpus contract before collection
 
-## Corpus requirements accumulated so far
+Write the labeling guide before labeling any rollout. It must define:
 
-Things decided since Week 1 that the recording setup must honour:
+- outcome and fine-grained fault codes `S1–S3`, `E1–E6`, and excluded hardware events
+  `H1–H2`;
+- collapsed semantic/execution analysis labels;
+- onset frame: first frame at which failure becomes inevitable;
+- unrecoverable boundary under the fixed scripted recovery;
+- uncertainty interval for ambiguous onset;
+- recoverable deviations that must remain negatives;
+- multiple-event rollouts and which event owns a detector trigger;
+- second-annotator procedure for a 15% stratified subset.
 
-- **Record grasp duration per episode.** D0's window has a hard upper bound set by grasp
-  duration; stating it from data rather than three runs needs this column.
-- **Record session temperature** at start and end (§0), for the drift question and for
-  D0r's floor stability.
-- **Negatives must include autonomous rollouts**, not only teleoperation — that is the
-  distribution the detectors actually face.
+Freeze the machine-readable annotation schema at the same time. At minimum record:
 
-## Open questions worth one run each
+- episode/run ID, task, arm, split, session, policy checkpoint, seed;
+- success, fine class, collapsed class, onset frame/time, unrecoverable frame/time;
+- grasp start/end and duration;
+- recovery eligibility and retry count;
+- session start/end temperature;
+- camera-alignment check;
+- disturbance type and measured magnitude when applicable.
 
-- **Slip precursor.** In `slip_a` cycle 1, gripper current drifted 344→337 over 1.6s before
-  letting go. If that's micro-slip rather than thermal drift it would buy far more lead
-  time than the 0.3–1.1s measured — which matters, because smoothing already spends some of
-  that budget. Grip firmly, wait for `GRIP OK`, hold 2s, then tilt so the object creeps:
+Define train/calibration/test splits by trajectory or episode group before fitting D0+.
+Near-duplicate trajectories must never cross splits. Threshold selection uses calibration
+only; held-out test conditions remain untouched until the detector suite is frozen.
 
-  ```bash
-  python research/telemetry/log_teleop_telemetry.py \
-      --follower-port /dev/ttyACM0 --leader-port /dev/ttyACM1 \
-      --out research/telemetry/runs/slip_slow_a.csv
-  python research/telemetry/plot_signatures.py \
-      research/telemetry/runs/slip_slow_a.csv --motor gripper
-  ```
+---
 
-  Thermal drift is monotonic over the whole hold; micro-slip should appear only in the
-  seconds before release. Run a matched no-slip hold of the same duration to tell them
-  apart — without it, any slow decline is ambiguous.
+## 6. Full demonstration collection
 
-- **`Goal_Position_2`** (addr 71, read-only) — unknown semantics, possibly the interpolated
-  setpoint. If it is, it is a better "commanded position" than `Goal_Position` for both
-  D0's command condition and D0r's features:
+After the T1 gate, collect 60 clean demonstrations per task, 180 total. Interleave tasks
+to distribute demonstrator fatigue and drift. Randomize object position on every episode.
+Back up each session off-machine before the next collection block.
 
-  ```bash
-  python research/telemetry/scan_registers.py --port /dev/ttyACM0 --motor gripper --seconds 6
-  ```
+One corpus trains both policies:
 
-- **`Goal_Position`** (addr 42) is already logged by the telemetry logger but is not in the
-  30-dim recorded schema. Position error (goal − present) is a named D0+ feature in the
-  revised proposal. Widening the block read to 42–70 pulls it into the same transaction for
-  free (~210 bytes against a 250-byte packet limit); normalise through `bus._normalize` so
-  it shares a scale with `pos`. Note following error is also large during normal fast
-  motion — the discriminating pattern is error that *persists while velocity is near zero*.
-  Revisit only if D0+ underperforms; changing the schema now would split the corpus.
+- Arms 1/2: truncate observation state to six positions.
+- Arms 3/4: use the full 30-dimensional state.
 
-- **`gate_analysis.py:34`** still hardcodes `SMOOTH_FRAMES = 5` with `center=True` in
-  `report_matched_pairs`. Its numbers are sound — the session log confirms centred and
-  trailing agree — but leaving a non-causal window in the analysis path invites reuse in a
-  detector. Worth a comment at minimum.
+Train with matching seeds and hyperparameters where possible. Only Arm 1 difficulty is
+calibrated; Arm 3's resulting failure rate and failure composition are outcomes.
+
+---
+
+## 7. Detector work after labeled data exists
+
+Use `detectors.py features` to build D0+ inputs, then fit logistic regression before a
+small MLP. The trivial duration baseline, D0, D0r, and D0+ must share the same splits and
+calibration data.
+
+Later detector order:
+
+1. D1 action-chunk consistency;
+2. D0+ telemetry classifier and window-length ablation;
+3. D3 supervised latent probe;
+4. D2 perturbation disagreement, offline if it is too slow online;
+5. fusion of the best proprioceptive and best model-internal detector;
+6. oracle labels for the closed-loop upper bound.
+
+Report AUPRC, false alarms per rollout, recall at fixed false-alarm budgets, event-matched
+latency, recovery-ready fraction, and measured compute/memory overhead. Keep D0's short
+5–10-frame rule separate from D0+'s long-window hypothesis.
+
+---
+
+## 8. Closed-loop requirements to preserve now
+
+- Hold episode budgets constant in **policy execution time**, not wall-clock time.
+- Flush queued action chunks on trigger.
+- Halt by writing present position as goal; never merely stop sending actions.
+- Replay recent commands backward before the return-home path.
+- Reopen the gripper and reinvoke the policy from the start pose.
+- Cap recovery at two retries.
+- Log every trigger, score, detector, threshold, recovery phase, and outcome.
+- Report successes recovered, successes disrupted by false alarms, unsafe/failed
+  recoveries, and added execution time separately.
+
+The current reset CLI validates halt and return-home mechanics. Integration with policy
+chunk flushing, recent-command reversal, gripper reopen, retry accounting, and policy
+reinvocation remains future closed-loop work; do not describe those pieces as completed.

@@ -4,6 +4,10 @@ Scripts for the Week 1 gate in the VLA failure-detection proposal: prove that th
 SO-101's Feetech STS3215 servos report a usable force-adjacent signal before five
 weeks are sunk into the study.
 
+Project status: [`DONE.md`](./DONE.md) records completed work and evidence;
+[`NEXT_STEPS.md`](./NEXT_STEPS.md) contains only unfinished gates and forward work. The
+latest detailed handoff is [`SESSION_2026-07-27.md`](./SESSION_2026-07-27.md).
+
 ## Where the data comes from
 
 LeRobot already knows how to read these registers — they're in the STS/SMS control
@@ -150,6 +154,43 @@ training/inference pipeline. Because positions occupy `state[:6]`, SmolVLA then 
 input byte-identical to a plain `so101_follower` recording, while detectors read all 24.
 Without it the policy consumes load and current, which confounds RQ2 — the comparison
 assumes the policy under test does not already encode the signal being evaluated.
+
+## Common detector interface
+
+`detectors.py` gives every rung one causal score per frame on a shared scale: `1.0` is
+the detector's configured operating threshold. It currently implements elapsed time
+(`duration`), the online conditioned-current slip rule (`d0`), and the free-space
+current residual (`d0r`). `OnlineD0.update(...)` is the stateful 30 Hz interface used
+later by closed-loop control; batch scoring calls that same method frame by frame.
+
+```bash
+python research/telemetry/detectors.py score research/telemetry/runs/*.csv \
+    --detectors duration,d0,d0r \
+    --model research/telemetry/models/freespace.npz \
+    --out research/telemetry/runs/scores.parquet
+
+python research/telemetry/detectors.py report \
+    research/telemetry/runs/scores.parquet
+
+python research/telemetry/detectors.py features research/telemetry/runs/*.csv \
+    --window 10 --out research/telemetry/runs/features.parquet
+```
+
+The report includes run- and frame-level AUPRC, false alarms per clean run, event-matched
+recall and lead time, recovery-ready fraction, and measured scoring latency. A threshold
+crossing is attributed to an onset only inside the declared event window; an unrelated
+earlier trigger remains a false alarm even if that rollout eventually fails. Week 1
+keypresses are reaction-delayed smoke-test labels, not publishable latency ground truth.
+
+The feature output contains causal rolling levels, differences, extrema, dispersion,
+command motion, and a low-velocity/high-current stall proxy for D0+. It deliberately
+does not subtract `goal_pos` from measured `pos`: logger goals are normalized while
+measured positions are raw ticks. Metadata and labels travel in the parquet file but
+must not be passed to a classifier as features.
+
+The `runs/` directory also contains analysis tables and recovery logs. Mixed globs skip
+these incompatible artifacts with an explicit message; add `--strict` when validating a
+collection job and any schema mismatch should be fatal.
 
 ## Passing the gate
 
