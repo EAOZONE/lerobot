@@ -252,12 +252,52 @@ Batch-path scoring cost from `scores.parquet`:
 | `d0` | 0.0116 |
 | `d0r` | 0.0018 |
 
-These are offline Python measurements over short CSVs. They are **not** the runtime cost
-figures §6 asks for. The denominator for every cost claim in the paper is end-to-end policy
-inference latency per control step at real settings, and that has not been measured on this
-machine at all. It requires no robot, no corpus, and no trained checkpoint beyond
-`lerobot/smolvla_base`, which is already in the local cache. It is the cheapest outstanding
-item in the entire project.
+These are offline Python measurements over short CSVs, not control-loop benchmarks. The
+denominator they need — end-to-end policy latency per control step — was measured on
+28 July with `bench_inference.py`, on the real `predict_action` path with the actual
+pre/post-processor pipelines.
+
+**RTX 4090, `lerobot/smolvla_base`, 6-dim state, 2 cameras at 480×640, 150 steps per row:**
+
+| `n_action_steps` | mean ms | recompute ms | worst ms | queue read ms | over 33.3 ms budget |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 81.9 | 81.9 | 105.0 | — | **150/150** |
+| 10 | 11.4 | 85.9 | 101.0 | 3.08 | 16/150 |
+| 25 | 5.9 | 85.1 | 88.3 | 2.59 | 6/150 |
+| **50** | **3.8** | 82.9 | 83.9 | 2.17 | 3/150 |
+
+Four findings, in descending order of consequence:
+
+**Compute is not a constraint on this hardware.** At the released chunk configuration the
+mean control step costs 3.8 ms — a sustained 264 Hz against a 30 Hz requirement, roughly 8×
+headroom. Nothing in the cost ladder is threatened by policy latency.
+
+**§7.1's single-step warning is confirmed, quantitatively.** `n_action_steps=1` costs 21.6×
+more per step (81.9 ms, ~12 Hz) and misses the 30 Hz budget on *every* step. It is the one
+configuration mistake that would silently invalidate the whole runtime-cost analysis.
+
+**The mean hides a stall, and this one matters.** Every 50th step recomputes the chunk at
+~83–87 ms — about **2.5 control periods**. The loop hitches on chunk refill. Against a slip
+lead-time budget of 0.3–1.1 s that is ~8% of the tightest case consumed by a scheduling
+artefact, before recovery does anything. **Budget recovery against the worst step, not the
+mean**, and log which steps were recompute steps during closed-loop runs.
+
+**Conditioning is free at runtime, as H5 assumes.** A 30-dim state costs 3.8 ms mean and
+85.5 ms recompute against 6-dim's 3.8 ms and 82.9 ms — identical within noise, because
+SmolVLA pads state to `max_state_dim=32` regardless. H5's cost-asymmetry premise ("Arm 3
+pays at training time and nothing at runtime") now has runtime evidence rather than an
+assumption.
+
+In that context the detector costs above are 0.3% (D0) and 0.05% (D0r) of a mean control
+step. The "cheap" claim in the cost ladder survives contact with a real denominator — with
+one scaling caveat: D0r's coverage check is a nearest-neighbour search against the *entire*
+stored training reference, so its per-frame cost grows linearly with the free-space training
+set. At corpus scale that reference is far larger than today's 1.2 MB and should be
+re-measured, or approximated, before it is quoted as free.
+
+Still unmeasured: 20k-step fine-tune wall-clock on this GPU. §5.4 budgets ~4 hours on an
+A100 and "proportionally longer on consumer hardware"; Weeks 4–6 change shape if that
+number is much worse.
 
 ---
 

@@ -223,3 +223,23 @@ Artifacts:
 - `D0R_FROZEN_SPEC.md`
 - `TRAJECTORY_C_PROTOCOL.md`
 - `probe_goal2.py`
+
+## Policy inference latency measured — 28 July 2026
+
+Measured on the real `predict_action` path with the actual pre/post-processor pipelines,
+RTX 4090, `lerobot/smolvla_base`, 6-dim state, 2 cameras at 480×640.
+
+- Mean control step at `n_action_steps=50`: **3.8 ms**, a sustained 264 Hz against a 30 Hz
+  requirement. Compute is not a constraint on this hardware.
+- Single-step prediction costs 21.6× more (81.9 ms, ~12 Hz) and misses the budget on every
+  step, confirming §7.1's warning quantitatively.
+- Chunk recompute costs ~83–87 ms, about 2.5 control periods, so the loop stalls every
+  `n_action_steps`. Recovery must be budgeted against the worst step, not the mean.
+- 6-dim and 30-dim state are identical within noise, because SmolVLA pads state to
+  `max_state_dim=32`. H5's "Arm 3 pays nothing at runtime" now has runtime evidence.
+- In context, D0 and D0r batch-path costs are 0.3% and 0.05% of a mean control step.
+
+Artifact: `bench_inference.py`.
+
+Not yet measured: 20k-step fine-tune wall-clock on this GPU, and D0r's coverage
+nearest-neighbour cost at corpus-scale training-set size.

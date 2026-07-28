@@ -29,7 +29,7 @@ telemetry↔frame alignment verification. See `WEEK2_REPORT.md` §1 for the full
 | 2 | redesign arbitrary-pose recovery path | partly | none | **safety blocker** |
 | 3 | rig cameras; photograph reference views | yes | none | not started, Week 2 deliverable |
 | 4 | decide the frame-alignment audit trail | no | none | not started, blocks corpus |
-| 5 | measure policy inference latency | no | none | not started, cheapest item open |
+| 5 | measure policy inference latency | no | none | **done 28 Jul** |
 | 6 | validate redesigned reset, 10 consecutive repeats | yes | none | blocked by gate 2 |
 | 7 | write labeling guide and annotation schema | no | none | can start now |
 | 8 | T1 pilot and difficulty calibration | yes | none | blocked by gates 1, 3, 6 |
@@ -188,17 +188,33 @@ per-episode sidecar keyed by frame index would not. Pick one and implement it be
 corpus episode is recorded, or record an explicit decision that alignment will be argued
 from construction rather than measured.
 
-### 3.3 Measure policy inference latency
+### 3.3 Policy inference latency — done 28 July 2026
 
-The cheapest outstanding item in the project and the denominator for every cost claim in
-§6. Needs no robot, no corpus, and no trained checkpoint — `lerobot/smolvla_base` is already
-in the local hub cache. Measure end-to-end latency per control step at the real action-chunk
-configuration, on this machine, and record it. Single-step prediction will cripple runtime
-performance; confirm the chunk configuration at the same time.
+Measured with `bench_inference.py`; full results in `WEEK2_REPORT.md` §6. Headline: 3.8 ms
+mean per control step at `n_action_steps=50` on the RTX 4090, roughly 8× headroom over
+30 Hz, and identical for 6-dim and 30-dim state. Compute is not a constraint.
 
-Also record 20k-step fine-tune wall-clock on this GPU from a short timed run. §5.4 budgets
-~4 hours on an A100 and "proportionally longer on consumer hardware"; Weeks 4–6 change
-shape if that number is much worse than assumed.
+Two results to carry forward:
+
+- **Set `n_action_steps` to the chunk size.** Single-step prediction costs 21.6× more and
+  misses the 30 Hz budget on every step. Verify this in the Week 6 checkpoint config.
+- **Budget recovery against the worst step, not the mean.** Chunk recompute costs ~85 ms,
+  about 2.5 control periods, so the loop hitches every `n_action_steps`. Log which steps
+  were recompute steps during closed-loop runs.
+
+```bash
+python research/telemetry/bench_inference.py                    # Arms 1/2
+python research/telemetry/bench_inference.py --state-dim 30     # Arms 3/4
+```
+
+**Still open:** 20k-step fine-tune wall-clock on this GPU from a short timed run. §5.4
+budgets ~4 hours on an A100 and "proportionally longer on consumer hardware"; Weeks 4–6
+change shape if that number is much worse than assumed. Worth doing on the first pilot
+dataset rather than synthetically.
+
+**Also open:** D0r's coverage check is a nearest-neighbour search against the whole stored
+training reference, so its per-frame cost grows linearly with the free-space training set.
+Today it is negligible. Re-measure at corpus scale before quoting D0r's cost as free.
 
 ### 3.4 Write the schema document
 
