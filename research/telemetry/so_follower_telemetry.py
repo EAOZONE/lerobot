@@ -94,7 +94,7 @@ class SOFollowerTelemetry(SOFollower):
 
         # Two bus transactions, not four. Position goes through the normal normalized
         # sync_read so its semantics are identical to the base class; everything else
-        # comes from one block read over the contiguous SRAM span (addr 56..70).
+        # comes from one block read over the contiguous SRAM span (addr 56..72).
         positions = self.bus.sync_read("Present_Position")
         telemetry = block_read(self.bus, fields=list(TELEMETRY_FIELDS))
 

@@ -5,7 +5,7 @@
 and current separately therefore costs four round-trips on a half-duplex bus, and the
 four values do not share a timestamp -- which makes them useless for onset labeling.
 
-Addresses 56..70 are contiguous SRAM, so one `_sync_read` over the whole span gets
+Addresses 56..72 are contiguous SRAM, so one `_sync_read` over the whole span gets
 everything at once. `GroupSyncRead.getData` supports sub-address extraction within the
 block it fetched, which is what makes this safe rather than clever.
 
@@ -16,9 +16,12 @@ subclass (so_follower_telemetry.py) so there is exactly one implementation to tr
 from lerobot.motors.encoding_utils import decode_sign_magnitude
 from lerobot.motors.feetech import FeetechMotorsBus
 
-# Present_Position(56,2) .. Present_Current(69,2) -> 56..70 inclusive = 15 bytes.
+# Present_Position(56,2) .. Goal_Position_2(71,2) -> 56..72 inclusive = 17 bytes.
+# Goal_Position_2 is the firmware's read-only internal/interpolated setpoint candidate.
+# Logging it is essential for separating repeat-dependent controller dynamics from
+# physical contact, and costs no additional bus transaction.
 BLOCK_ADDR = 56
-BLOCK_LEN = 15
+BLOCK_LEN = 17
 
 # field -> (address, n_bytes, sign_bit or None).
 # Sign bits come from STS_SMS_SERIES_ENCODINGS_TABLE in motors/feetech/tables.py.
@@ -31,6 +34,7 @@ BLOCK_FIELDS: dict[str, tuple[int, int, int | None]] = {
     "volt": (62, 1, None),
     "temp": (63, 1, None),
     "curr": (69, 2, None),
+    "goal2": (71, 2, None),
 }
 
 # For cross-checking against LeRobot's own per-register path.
@@ -41,6 +45,7 @@ REGISTER_FOR_FIELD = {
     "volt": "Present_Voltage",
     "temp": "Present_Temperature",
     "curr": "Present_Current",
+    "goal2": "Goal_Position_2",
 }
 
 
@@ -84,7 +89,7 @@ def verify_block_read(bus: FeetechMotorsBus) -> bool:
         for name in bus.motors:
             got, want = block[field][name], ref[name]
             # The two reads happen microseconds apart; anything moving will differ.
-            tol = 30 if field in ("pos", "vel", "curr", "load") else 0
+            tol = 30 if field in ("pos", "vel", "curr", "load", "goal2") else 0
             if abs(got - want) > tol:
                 print(f"  MISMATCH {field}/{name}: block={got} sync_read={want}")
                 ok = False

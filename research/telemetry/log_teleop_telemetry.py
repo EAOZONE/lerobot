@@ -6,9 +6,10 @@ CSV on shared timestamps. Deliberately collide; deliberately slip a grasp; mark 
 event as it happens. Then plot with plot_signatures.py and eyeball it.
 
 Telemetry is pulled with a single block read of the contiguous SRAM region
-(addr 56..70), so all fields in a row come from ONE bus transaction and share a
+(addr 56..72), so all fields in a row come from ONE bus transaction and share a
 timestamp -- not four staggered reads. That property is what makes onset labeling
-meaningful later.
+meaningful later. The last two bytes capture the read-only internal setpoint candidate
+as `goal2.*`; this is diagnostic CSV metadata and does not change the policy schema.
 
 A live grip readout is printed while recording: slip runs are only meaningful if the
 gripper was actually squeezing something first, and discovering otherwise in post-hoc
@@ -26,6 +27,12 @@ Usage:
         --follower-port /dev/ttyACM0 \
         --replay-dataset ${HF_USER}/sweep --replay-episode 0 \
         --out research/telemetry/runs/pair1_obstacle.csv
+
+    # replay commands directly from an earlier telemetry CSV (no Hub dataset needed):
+    python research/telemetry/log_teleop_telemetry.py \
+        --follower-port /dev/ttyACM0 \
+        --replay-csv research/telemetry/runs/freespace_b_01.csv \
+        --out research/telemetry/runs/pair4_clear.csv
 
     # sanity-check the block read against per-register sync_read first:
     python research/telemetry/log_teleop_telemetry.py ... --verify
@@ -107,6 +114,28 @@ def load_replay_actions(repo_id: str, root: Path | None, episode: int) -> list[d
     ]
 
 
+def load_csv_actions(path: Path, motors: list[str]) -> list[dict[str, float]]:
+    """Read normalized commanded positions from a telemetry logger CSV."""
+    with path.open(newline="") as fh:
+        reader = csv.DictReader(fh)
+        if reader.fieldnames is None:
+            raise ValueError(f"Replay CSV {path} has no header")
+        columns = {motor: f"goal_pos.{motor}" for motor in motors}
+        missing = sorted(set(columns.values()) - set(reader.fieldnames))
+        if missing:
+            raise ValueError(f"Replay CSV {path} is missing columns: {', '.join(missing)}")
+
+        actions = []
+        for line_number, row in enumerate(reader, start=2):
+            try:
+                actions.append({f"{motor}.pos": float(row[column]) for motor, column in columns.items()})
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"Invalid goal position in {path} at CSV line {line_number}") from exc
+    if not actions:
+        raise ValueError(f"Replay CSV {path} contains no actions")
+    return actions
+
+
 def grip_status(telemetry: dict[str, dict[str, int]]) -> str:
     """One-line grip readout.
 
@@ -126,25 +155,32 @@ def main() -> None:
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
     parser.add_argument("--follower-port", required=True)
-    parser.add_argument("--leader-port", help="required unless --replay-dataset is given")
+    parser.add_argument("--leader-port", help="required unless --replay-dataset or --replay-csv is given")
     parser.add_argument("--id-follower", default="signature_follower")
     parser.add_argument("--id-leader", default="signature_leader")
     parser.add_argument("--out", required=True, type=Path)
     parser.add_argument("--fps", type=float, default=30.0)
     parser.add_argument("--verify", action="store_true", help="check block read, then exit")
-    parser.add_argument(
+    replay_group = parser.add_mutually_exclusive_group()
+    replay_group.add_argument(
         "--replay-dataset",
         help="repo_id of a dataset to replay instead of teleoperating. The episode's "
         "action column drives the arm from THIS process -- do not run lerobot-replay "
         "alongside, two processes cannot share the serial port.",
     )
+    replay_group.add_argument(
+        "--replay-csv",
+        type=Path,
+        help="telemetry CSV whose normalized goal_pos columns are replayed directly; "
+        "use this to make matched pairs without creating a Hub dataset",
+    )
     parser.add_argument("--replay-root", type=Path, default=None, help="local dataset root")
     parser.add_argument("--replay-episode", type=int, default=0)
     args = parser.parse_args()
 
-    replaying = args.replay_dataset is not None
+    replaying = args.replay_dataset is not None or args.replay_csv is not None
     if not replaying and not args.leader_port:
-        parser.error("--leader-port is required unless --replay-dataset is given")
+        parser.error("--leader-port is required unless --replay-dataset or --replay-csv is given")
 
     follower = SO101Follower(SO101FollowerConfig(port=args.follower_port, id=args.id_follower))
     follower.connect()
@@ -159,14 +195,21 @@ def main() -> None:
 
     leader = None
     actions: list[dict[str, float]] = []
-    if replaying:
+    motors = list(follower.bus.motors)
+    if args.replay_dataset is not None:
         actions = load_replay_actions(args.replay_dataset, args.replay_root, args.replay_episode)
         print(f"Replaying {len(actions)} frames from {args.replay_dataset} ep{args.replay_episode}")
+    elif args.replay_csv is not None:
+        try:
+            actions = load_csv_actions(args.replay_csv, motors)
+        except (OSError, ValueError) as exc:
+            follower.disconnect()
+            parser.error(str(exc))
+        print(f"Replaying {len(actions)} frames from {args.replay_csv}")
     else:
         leader = SO101Leader(SO101LeaderConfig(port=args.leader_port, id=args.id_leader))
         leader.connect()
 
-    motors = list(follower.bus.motors)
     columns = (
         ["t", "marker", "frame_idx"]
         + [f"goal_pos.{m}" for m in motors]
