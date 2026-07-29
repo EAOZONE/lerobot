@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://eaozone.github.io/lerobot/recovery_validation.schema.json",
+  "title": "Reviewed physical recovery validation record",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "operator",
+    "reviewed_at",
+    "waypoint_config_sha256",
+    "routes",
+    "reset_exit"
+  ],
+  "properties": {
+    "schema_version": {"const": 1},
+    "operator": {"type": "string", "minLength": 1},
+    "reviewed_at": {"type": "string", "minLength": 1},
+    "waypoint_config_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "no_object_clearance_pass",
+          "static_object_clearance_pass",
+          "representative_fault_pose_pass",
+          "logs"
+        ],
+        "properties": {
+          "name": {"type": "string", "minLength": 1},
+          "no_object_clearance_pass": {"const": true},
+          "static_object_clearance_pass": {"const": true},
+          "representative_fault_pose_pass": {"const": true},
+          "logs": {
+            "type": "array",
+            "minItems": 1,
+            "items": {"type": "string", "minLength": 1}
+          }
+        }
+      }
+    },
+    "reset_exit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "consecutive_resets",
+        "manual_interventions",
+        "visual_clearance_pass",
+        "pre_health",
+        "post_health",
+        "pre_health_no_alarms",
+        "post_health_no_alarms",
+        "start_shoulder_lift_temperature_c",
+        "end_shoulder_lift_temperature_c",
+        "peak_shoulder_current_raw",
+        "logs"
+      ],
+      "properties": {
+        "consecutive_resets": {"const": 10},
+        "manual_interventions": {"const": 0},
+        "visual_clearance_pass": {"const": true},
+        "pre_health": {"type": "string", "minLength": 1},
+        "post_health": {"type": "string", "minLength": 1},
+        "pre_health_no_alarms": {"const": true},
+        "post_health_no_alarms": {"const": true},
+        "start_shoulder_lift_temperature_c": {"type": "number", "minimum": 0, "maximum": 100},
+        "end_shoulder_lift_temperature_c": {"type": "number", "minimum": 0, "maximum": 100},
+        "peak_shoulder_current_raw": {"type": "integer", "minimum": 0},
+        "logs": {
+          "type": "array",
+          "minItems": 10,
+          "maxItems": 10,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "route"],
+            "properties": {
+              "path": {"type": "string", "minLength": 1},
+              "route": {"type": "string", "minLength": 1}
+            }
+          }
+        }
+      }
+    }
+  }
+}

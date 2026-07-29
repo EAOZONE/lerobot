@@ -6,6 +6,9 @@ framing and the schedule are in [`Research.md`](./Research.md) and
 [`vla-failure-detection.md`](./vla-failure-detection.md). This file contains only
 unfinished work.
 
+The strict desk-completion and external-blocker evidence audit is
+[`NEXT_STEPS_BLOCKED_AUDIT_2026-07-28.md`](./NEXT_STEPS_BLOCKED_AUDIT_2026-07-28.md).
+
 ## Where this sits against the schedule
 
 `vla-failure-detection.md` §7.1 anchors Week 1 to 3–9 August 2026 and says to shift
@@ -13,10 +16,10 @@ uniformly if you start later. Work started **earlier**: the Week 1 gate closed 2
 Week 2's software was built 26–28 July. Against the anchor the project is roughly two weeks
 ahead, and the nominal Week 3 pilot does not begin until 17 August.
 
-That buffer is real but it is not spendable on analysis. Everything currently in progress
-is desk work that consumes no robot time and no calendar. The two items that *do* have
-external lead time — spare servos and task objects — are the two nobody has started, and
-they gate the pilot absolutely. **Procurement is the critical path, not D0r.**
+That buffer is real but it is not spendable on analysis. The remaining Week 2 gates now
+require physical work, and two later gates have external lead time: procurement and the
+second annotator. Spare servos and task objects still gate the pilot absolutely.
+**Procurement is the critical path, not D0r.**
 
 The three Week 2 exit criteria that remain unmet are the reset soak, camera rigging, and
 telemetry↔frame alignment verification. See `WEEK2_REPORT.md` §1 for the full scorecard.
@@ -26,12 +29,12 @@ telemetry↔frame alignment verification. See `WEEK2_REPORT.md` §1 for the full
 | order | gate | robot | lead time | status |
 |---:|---|:---:|:---:|---|
 | 1 | order servos and task materials | no | **external** | **not started — gates everything** |
-| 2 | redesign arbitrary-pose recovery path | partly | none | **safety blocker** |
+| 2 | physically validate arbitrary-pose recovery routes | yes | none | **software done; safety gate open** |
 | 3 | rig cameras; photograph reference views | yes | none | not started, Week 2 deliverable |
-| 4 | decide the frame-alignment audit trail | no | none | not started, blocks corpus |
+| 4 | verify timing sidecar on a two-camera episode | yes | none | software done; hardware smoke test open |
 | 5 | measure policy inference latency | no | none | **done 28 Jul** |
 | 6 | validate redesigned reset, 10 consecutive repeats | yes | none | blocked by gate 2 |
-| 7 | write labeling guide and annotation schema | no | none | can start now |
+| 7 | arrange second annotator | no | external | guide/schema done; person not arranged |
 | 8 | T1 pilot and difficulty calibration | yes | none | blocked by gates 1, 3, 6 |
 
 Do not run the unattended reset soak until gate 2 is resolved. The trajectory-B hold-out is
@@ -58,9 +61,24 @@ Order the T2 friction pair and the T3 near-identical distractors even if T1 is t
 task piloted. They are the difficulty levers §5.3 depends on, and a second order later
 costs another lead time.
 
+Use `PROCUREMENT_CHECKLIST.md` to record exact parts, vendors, dates, and arrivals. The
+checklist is ready; the gate remains open until the order is actually placed.
+
 ---
 
-## 2. Redesign arbitrary-pose recovery before the reset exit test
+## 2. Physically validate arbitrary-pose recovery before the reset exit test
+
+The reverse-replay/waypoint recovery software and supervised validator were implemented
+28 July; see `RECOVERY_PROTOCOL.md` and `ROBOT_DATA_RUNBOOK.md`. The runtime now fails
+closed on unvalidated/ambiguous routes, current, following error, joint range, and timeout.
+The old lift-first path is hidden behind an explicit unsafe-experiment acknowledgement.
+`audit_recovery.py` now checks every supervised log against the reviewed configuration and
+refuses to pass an unvalidated route; geometric clearance and the ten repetitions remain
+physical evidence, not software assertions.
+
+**This is still a safety blocker.** No waypoint has been recorded or physically validated,
+the tested queue-flush supervisor is not attached to live rollout, and the ten-reset test
+has not run. Do not equate passing offline tests with collision-free motion.
 
 The current reset enters its recorded path by moving only `shoulder_lift`, then aligning
 the other joints. Hardware testing showed why this is not a general safety rule. A single
@@ -131,6 +149,15 @@ these quantities rather than relying on visual judgment.
 
 The existing soak log has five repeats and predates this redesign. The exit criterion is
 ten consecutive resets with minimal manual intervention using the redesigned code.
+`recovery_validation.schema.json` now freezes the evidence record, and
+`audit_recovery_readiness.py` will issue an immutable enablement token only when every
+route log, ten distinct redesigned reset logs, pre/post diagnostics, temperature/current
+fields, checkpoint, and configuration hash pass. This closes the evidence-format gap; it
+does not supply any of the missing physical inputs.
+`recovery_enablement.py` now closes the stale-token runtime gap: immediately before
+recovery construction it recomputes all bound hashes and compares run, revision, chunk,
+mode, checkpoint, and the actual inference-engine class. Changed artifacts or upstream RTC
+raise before any recovery object exists.
 
 Health check first:
 
@@ -138,13 +165,10 @@ Health check first:
 python research/telemetry/diagnose.py --port /dev/ttyACM0
 ```
 
-Then the soak, workspace clear, hand near the power switch for the first repeat:
-
-```bash
-python research/telemetry/recovery.py reset --port /dev/ttyACM0 \
-    --home research/telemetry/runs/reset_home.csv --repeat 10 \
-    --log research/telemetry/runs/reset_soak.csv
-```
+Then follow the supervised region-by-region commands and validation ladder in
+`ROBOT_DATA_RUNBOOK.md`. There is deliberately no unattended soak command until every
+workspace route has passed that ladder and the live policy runtime supplies its actual
+command ring buffer and action-queue flush.
 
 Immediately capture post-soak health and temperature:
 
@@ -174,7 +198,7 @@ viewpoint drift as "the most common silent confound in this literature" and requ
 check to be verified and **logged** at the start of every session. Decide now where that
 log lives; retrofitting it is worthless because the drift it detects is already baked in.
 
-### 3.2 Decide the frame-alignment audit trail
+### 3.2 Verify the implemented frame-alignment audit trail on hardware
 
 `SOFollowerTelemetry.get_observation()` reads position, the telemetry block, and both
 cameras in one call, so telemetry and image share a control step by construction. But the
@@ -183,10 +207,15 @@ perfect 30 Hz, so neither jitter nor a dropped frame is visible in the recorded 
 Week 2's exit criterion — alignment verified to within one control step — cannot currently
 be checked at all, before or after the fact.
 
-Adding a wall-clock column to `observation.state` would break the 30-dim freeze. A
-per-episode sidecar keyed by frame index would not. Pick one and implement it before any
-corpus episode is recorded, or record an explicit decision that alignment will be argued
-from construction rather than measured.
+The decision and software are complete: `record_with_telemetry.py` writes per-episode JSONL
+sidecars keyed by frame index without changing the 30-dim state. They contain monotonic
+state/telemetry read times and each camera thread's actual capture timestamp;
+`audit_alignment.py` enforces the one-control-step contract and detects stale, duplicate,
+missing, or dropped captures. Offline tests pass.
+
+Still required: record one disposable two-camera episode and obtain a strict audit PASS
+before collecting anything for the corpus. Preserve a failing episode and sidecar as a
+diagnostic artifact.
 
 ### 3.3 Policy inference latency — done 28 July 2026
 
@@ -212,56 +241,32 @@ budgets ~4 hours on an A100 and "proportionally longer on consumer hardware"; We
 change shape if that number is much worse than assumed. Worth doing on the first pilot
 dataset rather than synthetically.
 
-**Also open:** D0r's coverage check is a nearest-neighbour search against the whole stored
-training reference, so its per-frame cost grows linearly with the free-space training set.
-Today it is negligible. Re-measure at corpus scale before quoting D0r's cost as free.
+**Coverage scaling measured 28 July.** `D0R_COVERAGE_BENCHMARK.md` projects the stored
+reference to 270k frames. The exact reusable SciPy tree costs 177 ms once at model load,
+about 0.03 ms per online frame, and 140 MiB; scores and scorable masks remained unchanged.
+The exact NumPy fallback is memory-safe but costs about 32 ms for an isolated frame, so the
+corpus runtime must include SciPy. Re-measure on the actual corpus model for the final cost
+table, but the implementation blocker is closed.
 
-### 3.4 Write the schema document
-
-The 30-dim freeze is real but is described across `WEEK1_REPORT.md` §7, `DONE.md`, and
-`README.md`. §7.1 lists "a frozen data schema document" as a Week 2 deliverable and it is
-also a released-artifact item. One page, one file.
-
-### 3.5 Write the labeling guide before any labeling begins
-
-Scheduled for Weeks 7–9, but it is zero-robot desk work and §7.1 is explicit that a
-taxonomy fitted to data you have already seen is not a taxonomy. Write it now, while
-blocked. It must define:
-
-- outcome and fine-grained fault codes `S1–S3`, `E1–E6`, and excluded hardware events
-  `H1–H2`;
-- collapsed semantic/execution analysis labels;
-- onset frame: first frame at which failure becomes inevitable;
-- unrecoverable boundary under the fixed scripted recovery;
-- uncertainty interval for ambiguous onset;
-- recoverable deviations that must remain negatives;
-- multiple-event rollouts and which event owns a detector trigger;
-- second-annotator procedure for a 15% stratified subset.
-
-Freeze the machine-readable annotation schema at the same time. At minimum record: episode
-ID, task, arm, split, session, policy checkpoint, seed; success, fine class, collapsed
-class, onset frame/time, unrecoverable frame/time; **grasp start/end and duration**;
-recovery eligibility and retry count; session start/end temperature; camera-alignment check;
-disturbance type and measured magnitude.
-
-Define train/calibration/test splits by trajectory or episode group before fitting anything.
-Near-duplicate trajectories must never cross splits. Threshold selection uses calibration
-only; held-out test conditions stay untouched until the detector suite is frozen.
-
-### 3.6 Arrange a second annotator
+### 3.4 Arrange a second annotator
 
 Week 9 needs an independent annotator on a 15% subsample and a reported Cohen's κ. This is a
 person-dependency with its own lead time and nobody has arranged it. §7.1's exit criterion
 is κ above roughly 0.7 on class labels, with a re-label if onset agreement is poor — so the
 second annotator must be available *during* Week 9, not after.
 
-### 3.7 Watch the workshop deadline
+`ANNOTATOR_BRIEF.md` now fixes the blinded inputs, outputs, time commitment, agreement
+report, and outreach text. The gate remains open until a person accepts.
 
-§7.2 targets a CoRL 2026 workshop submission in late September / early October, with the
-event on 9 November in Austin. Individual workshop deadlines are set by organizers and are
-typically 4–6 weeks before the event. Nobody has looked them up. The submission content —
-taxonomy, telemetry signatures, D0/D0r/D0+ preliminary results — is closer to ready than
-the schedule assumes, so this is worth pinning to a real date.
+### 3.5 Watch the workshop deadline
+
+Checked 28 July against the live conference and workshop pages. The strongest target is
+**Continually Self-Improving Robots** (failure discovery, automatic reset, safe exploration,
+reliable evaluation); Human-Centered Robot Learning and Memory for Robot Foundation Models
+are backups. All three have calls/pages, but no authoritative calendar deadline is
+published yet. `WORKSHOP_TRACKER.md` records the official links, fit, format, and a weekly
+Monday check rule. Do not treat the proposal's late-September/early-October estimate as a
+deadline.
 
 ---
 
@@ -314,9 +319,9 @@ It is not blocking the pilot and it should not consume robot time before it.**
    values, the ≥19-rollout minimum, and the rule that the procedure is frozen while the
    fitted model is not — the deployable model is refit on corpus training data, and no
    development `.npz` is eligible.
-3. **Corpus requirements for calibration** specified in §6 of that spec: verified-clear
-   flag, independence group, session, temperature, payload state, split assignment. These
-   must land in the labeling guide (§3.5) before collection, not after.
+3. **Corpus requirements for calibration** specified in §6 of that spec and frozen in
+   `LABELING_GUIDE.md` plus `annotation.schema.json`: verified-clear flag, independence
+   group, session, temperature, payload state, and split assignment.
 4. **Trajectory C pre-registered** in
    [`TRAJECTORY_C_PROTOCOL.md`](./TRAJECTORY_C_PROTOCOL.md), including how abstention
    counts, what happens if C fails, and the analysis commands written before the data
@@ -352,9 +357,29 @@ may explain sensitivity; the recorded primary verdict remains failed.
 
 Blocked on materials (§1), cameras (§3.1), and the reset exit test (§2).
 
-Collect 30 randomized T1 demonstrations with the frozen 30-dimensional telemetry schema.
-Train the Arm 1 six-dimensional policy with `TruncateStateStep(keep=6)`, then run roughly 30
-autonomous evaluations.
+Collect 30 randomized T1 demonstrations with the frozen 30-dimensional telemetry schema,
+then run roughly 30 autonomous evaluations. The previously missing train-path integration
+is now implemented: `train_positions_only.py` narrows copied policy metadata/statistics and
+serializes `TruncateStateStep(keep=6)` before normalization without changing the corpus.
+The commands and preflight checks are frozen in `PILOT_PROTOCOL.md` and
+`ROBOT_DATA_RUNBOOK.md`. No pilot data has been collected and the physical gates above
+remain open.
+
+Autonomous evaluation uses `rollout_with_telemetry.py --strategy.type=episodic`. The prior
+draft command incorrectly attached `--policy.path` to the teleoperation-only recording
+entry point and has been replaced. The rollout wrapper registers the telemetry robot and
+positions-only checkpoint processor and retains alignment sidecars.
+
+`audit_corpus.py` is the executable acceptance gate for recorded pilot datasets. It checks
+the actual Parquet vector values and counts, normalization-statistic widths, both camera
+artifacts, and every alignment sidecar; metadata alone is not accepted as proof. Visual
+review and physical task acceptance remain operator judgments.
+
+`audit_positions_checkpoint.py` is the executable Arm 1 checkpoint gate. Training now
+refuses the two-camera corpus unless wrist/overhead are explicitly mapped to SmolVLA's
+pretrained camera1/camera2 inputs, and the auditor verifies that mapping alongside the
+serialized six-position truncation, normalization state, model features, and full action
+chunk before autonomous motion.
 
 Target a 40–60% Arm 1 failure rate. At n=30 the estimate carries roughly ±18 percentage
 points, so stop after at most three tuning iterations once it lands in band. Prefer physical
@@ -389,6 +414,8 @@ After the T1 gate, collect 60 clean demonstrations per task, 180 total. Interlea
 distribute demonstrator fatigue and drift. Randomize object position on every episode.
 Verify camera alignment against the §3.1 reference photographs at the start of every session
 and log the check. Back up each session off-machine before the next collection block.
+Use `DATA_BACKUP_PROTOCOL.md`: upload the complete dataset root, including timing sidecars,
+to a private Hub dataset and verify the remote tree before continuing.
 
 One corpus trains both policies:
 
@@ -437,6 +464,56 @@ hypothesis; the 500-sample industrial result belongs to D0+, not to D0.
 - Report successes recovered, successes disrupted by false alarms, unsafe/failed recoveries,
   and added execution time separately.
 
-The current reset CLI validates halt and return-home mechanics only. Integration with policy
-chunk flushing, recent-command reversal, gripper reopen, retry accounting, and policy
-reinvocation remains future closed-loop work; do not describe those pieces as completed.
+The supervised validator exercises halt, an actual-command ring buffer, recent-command
+reversal, monitored waypoints/home, and gripper reopen. `RecoverySupervisor` now implements
+the offline-testable orchestration contract: structured trigger events, mandatory policy
+queue flush verification, a bounded accepted-command history, two-recovery episode cap,
+fail-closed states, stale-history clearing, and explicit reinvocation.
+`RolloutRecoveryLifecycle` fixes the executable sync/RTC ordering: pause, reset inference
+and processors, reset interpolation, invalidate cached observation, publish a fresh start
+observation, then resume. Episode start uses the same complete flush/reinvoke pair.
+`RecoveryAwareActionGate` now enforces causal score-before-action-provider dispatch, so a
+triggering frame cannot pop or compute and send a stale action; only successfully sent and
+read-back commands enter history. `PolicyTickBudget` counts each autonomous observation
+once while excluding synchronous recovery motion.
+`OnlineD0ObservationScorer` now supplies the concrete live D0 boundary: it reads raw
+`gripper.current`, conditions on the last normalized `gripper.pos` actually returned by
+the follower after safety clipping, exposes first-frame warm-up as unscorable, and clears
+history on episode/recovery reset. Raw `Goal_Position` readback remains exclusively for
+recovery replay. The gate fails closed rather than guessing when the follower returns no
+accepted action.
+The RTC trace found that upstream `pause()` alone is racy: a producer already inside
+inference may merge a stale chunk after queue reset. `RecoverySafeRTCInferenceEngine` now
+uses generation-bearing producer cursors and rejects every merge spanning suspend/reset or
+resume; a deterministic threaded test covers the active-producer ordering. The lifecycle
+also reseeds D0 from the fresh normalized start observation before action production
+resumes. A recovery-enabled RTC adapter must use this guarded engine, not upstream RTC
+directly.
+The complete mocked sync and guarded-RTC loop acceptance test now passes. It composes D0,
+the action gate, supervisor, lifecycle, interpolation reset, policy-tick budget, and RTC
+queue across a trigger and successful reinvocation. Sync performs no trigger-frame
+compute/pop and drops the old chunk; RTC rejects an in-flight pre-trigger merge that
+finishes after recovery and sends only a newly published action.
+The joined-evidence software contract is also complete: supervisor event schema 2 carries
+canonical run/episode/attempt IDs; immutable manifests freeze checkpoint, revision,
+inference mode, chunk settings, and config hashes; each recovery frame carries the same
+identity; terminal outcomes are append-only; and `audit_recovery_evidence.py` rejects
+missing, orphaned, duplicated, or conflicting joins. A synthetic complete bundle passes.
+The composed retry-cap test now runs two real D0-triggered recovery/reinvoke cycles and a
+third stable-command current drop. Recoveries one and two resume; trigger three enters the
+terminal exhausted state before physical execution, policy access, or action send.
+`RecoveryControlLoop` counts that exception frame in `PolicyTickBudget`, closing the hole
+in the earlier consume-after-return pattern.
+Connecting that gate exposed and fixed D0's sole warm-up frame: it is now explicitly
+unscorable (`None` online, `NaN` plus `scorable=false` in batch) rather than a zero anomaly
+score. D0r was rechecked independently and remained byte-equivalent in masks/triggers with
+zero score delta on four development runs.
+
+**Still open:** these primitives are deliberately not attached to
+`rollout_with_telemetry.py` while all
+routes remain physically unvalidated. The live adapter must also preserve policy-execution
+time budgets in the live strategy, join phase telemetry to episode outcomes on real data, prove no stale chunk
+action escapes, select the guarded RTC engine in the live factory, and pass the remaining
+hardware and live joined-evidence tests in
+`CLOSED_LOOP_RECOVERY_INTEGRATION.md`. Do not describe
+detector-triggered hardware recovery as completed.

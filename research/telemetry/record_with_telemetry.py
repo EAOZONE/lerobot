@@ -27,6 +27,8 @@ Usage (identical to lerobot-record apart from the robot type):
 """
 
 import so_follower_telemetry  # noqa: F401  -- import registers the robot config subclasses
+from alignment_sidecar import record_alignment_sidecars
+from truncate_state_step import TruncateStateStep as _TruncateStateStep  # noqa: F401
 
 from lerobot.scripts.lerobot_record import record
 from lerobot.utils.import_utils import register_third_party_plugins
@@ -34,7 +36,10 @@ from lerobot.utils.import_utils import register_third_party_plugins
 
 def main() -> None:
     register_third_party_plugins()
-    record()
+    # Sidecars are committed only after their matching dataset episode saves.
+    # Re-recorded/cleared episode buffers discard their pending timing rows.
+    with record_alignment_sidecars():
+        record()
 
 
 if __name__ == "__main__":

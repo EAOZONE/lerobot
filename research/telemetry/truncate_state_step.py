@@ -45,6 +45,10 @@ class TruncateStateStep(ObservationProcessorStep):
 
     keep: int = 6
 
+    def get_config(self) -> dict[str, int]:
+        """Persist ``keep`` explicitly; it is a research-arm identity, not a disposable default."""
+        return {"keep": self.keep}
+
     def observation(self, observation: dict) -> dict:
         state = observation.get(OBS_STATE)
         if state is None:

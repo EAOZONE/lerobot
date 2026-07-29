@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from analyze_goal2 import _symmetric_prediction_error  # noqa: E402
 from causal_eval import causal_slip_score  # noqa: E402
+from coverage_index import CoverageIndex, _bounded_nearest_distances  # noqa: E402
 from detectors import (  # noqa: E402
     D0_THRESHOLD,
     D0Detector,
@@ -42,7 +43,12 @@ def test_online_d0_rejects_commanded_release() -> None:
             zip([250, 250, 250, 250, 100, 10, 10], [10, 10, 10, 30, 50, 70, 70], strict=True)
         )
     ]
-    assert max(scores) < 1.0
+    assert max(score for score in scores if score is not None) < 1.0
+
+
+def test_online_d0_warmup_is_unscorable_not_zero() -> None:
+    detector = OnlineD0(window=3, raw_threshold=100)
+    assert detector.update(t=0.0, gripper_current=250, gripper_goal=10) is None
 
 
 def test_batch_d0_is_the_online_interface_applied_frame_by_frame() -> None:
@@ -59,9 +65,14 @@ def test_batch_d0_is_the_online_interface_applied_frame_by_frame() -> None:
         [
             online.update(t=row[0], gripper_current=row[1], gripper_goal=row[2])
             for row in frame.itertuples(index=False, name=None)
-        ]
+        ],
+        dtype=float,
     )
-    np.testing.assert_allclose(batch, streamed)
+    np.testing.assert_allclose(batch, streamed, equal_nan=True)
+    result = D0Detector(window=3, raw_threshold=100).score(frame)
+    assert np.isnan(result.score[0])
+    assert not result.scorable[0]
+    assert result.scorable[1:].all()
 
 
 def test_online_d0_preserves_the_week1_causal_rule() -> None:
@@ -69,7 +80,8 @@ def test_online_d0_preserves_the_week1_causal_rule() -> None:
     frame = pd.read_csv(run, keep_default_na=False)
     online_scores = D0Detector().score(frame).score
     established_scores = causal_slip_score(frame, 10)[0] / D0_THRESHOLD
-    np.testing.assert_allclose(online_scores, established_scores)
+    established_scores[0] = np.nan
+    np.testing.assert_allclose(online_scores, established_scores, equal_nan=True)
 
 
 def test_d0r_preserves_week1_clear_obstacle_separation() -> None:
@@ -124,6 +136,9 @@ def test_command_coverage_uses_nearest_training_feature_vector() -> None:
     query = np.array([[0.0, 0.0], [4.0, 5.0]])
     reference = np.array([[0.0, 1.0], [4.0, 2.0]])
     np.testing.assert_allclose(_nearest_distances(query, reference), [1.0, 3.0])
+    np.testing.assert_allclose(_bounded_nearest_distances(query, reference), [1.0, 3.0])
+    np.testing.assert_allclose(CoverageIndex(reference).nearest_distances(query), [1.0, 3.0])
+    np.testing.assert_allclose(CoverageIndex(reference, use_scipy=False).nearest_distances(query), [1.0, 3.0])
 
 
 def test_five_percent_rollout_calibration_needs_nineteen_clear_runs() -> None:

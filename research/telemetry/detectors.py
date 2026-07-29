@@ -37,7 +37,8 @@ from time import perf_counter
 
 import numpy as np
 import pandas as pd
-from freespace_model import ARM, RESIDUAL_SMOOTH, WARMUP, _trailing_mean, coverage_ratio, predict
+from coverage_index import CoverageIndex
+from freespace_model import ARM, RESIDUAL_SMOOTH, WARMUP, _trailing_mean, build_features, predict
 
 MOTORS = [*ARM, "gripper"]
 SUPPORTED_DETECTORS = ("duration", "d0", "d0r")
@@ -136,9 +137,11 @@ class D0Detector(Detector):
                     }
                 )
                 .itertuples(index=False)
-            ]
+            ],
+            dtype=float,
         )
-        return DetectorResult(score, np.ones(len(frame), dtype=bool))
+        scorable = np.isfinite(score)
+        return DetectorResult(score, scorable)
 
 
 class OnlineD0:
@@ -160,8 +163,8 @@ class OnlineD0:
         self.goals: list[float] = []
         self.frame_deltas: deque[float] = deque(maxlen=60)
 
-    def update(self, *, t: float, gripper_current: float, gripper_goal: float) -> float:
-        """Consume one frame and return its normalized causal anomaly score."""
+    def update(self, *, t: float, gripper_current: float, gripper_goal: float) -> float | None:
+        """Return a causal normalized score, or ``None`` until a drop can exist."""
         if self.timestamps and t <= self.timestamps[-1]:
             raise ValueError("OnlineD0 timestamps must increase strictly")
         if self.timestamps:
@@ -173,7 +176,7 @@ class OnlineD0:
 
         j = len(self.timestamps) - 1
         if j == 0:
-            return 0.0
+            return None
         dt = float(np.median(self.frame_deltas))
         span = max(1, int(round(D0_DROP_WINDOW_S / max(dt, 1e-6))))
         best = 0.0
@@ -203,6 +206,11 @@ class D0ResidualDetector(Detector):
         self.model_path = model_path
         self.model = dict(np.load(model_path, allow_pickle=True))
         self.arm = [str(m) for m in self.model["arm"]]
+        self.coverage_index = (
+            CoverageIndex(self.model["coverage_reference"])
+            if "coverage_reference" in self.model and "coverage_floor" in self.model
+            else None
+        )
         if use_calibrated:
             if "calibrated_floors" not in self.model:
                 raise ValueError(
@@ -231,7 +239,11 @@ class D0ResidualDetector(Detector):
         )
         score = (smoothed / self.floors).max(axis=1)
         scorable = np.arange(len(frame)) >= WARMUP
-        coverage = coverage_ratio(self.model, frame)
+        coverage = None
+        if self.coverage_index is not None:
+            features = (build_features(frame) - self.model["mu"]) / self.model["sigma"]
+            floor = max(float(self.model["coverage_floor"]), 1e-9)
+            coverage = self.coverage_index.nearest_distances(features) / floor
         if coverage is not None:
             # Unsupported commands are an abstention, not evidence of contact. Keeping
             # these frames unscorable also prevents them entering AUPRC/false-alarm metrics.

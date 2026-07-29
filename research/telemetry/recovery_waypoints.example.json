@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "limits": {
+    "joint_min": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 0},
+    "joint_max": {"shoulder_pan": 4095, "shoulder_lift": 4095, "elbow_flex": 4095, "wrist_flex": 4095, "wrist_roll": 4095, "gripper": 4095},
+    "max_current": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 0},
+    "max_following_error": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 0},
+    "max_step_ticks": 0,
+    "phase_timeout_s": 0,
+    "reverse_frames": 0,
+    "fault_guard_frames": 0,
+    "gripper_open": 0
+  },
+  "routes": [
+    {
+      "name": "REPLACE_WITH_VALIDATED_REGION",
+      "validated": false,
+      "region_min": {"shoulder_pan": 0, "shoulder_lift": 0, "elbow_flex": 0, "wrist_flex": 0, "wrist_roll": 0, "gripper": 0},
+      "region_max": {"shoulder_pan": 4095, "shoulder_lift": 4095, "elbow_flex": 4095, "wrist_flex": 4095, "wrist_roll": 4095, "gripper": 4095},
+      "waypoints": []
+    }
+  ]
+}

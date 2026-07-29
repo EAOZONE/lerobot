@@ -1,0 +1,54 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lerobot.local/telemetry/annotation.schema.json",
+  "title": "LeRobot telemetry rollout annotation",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "episode_id", "task", "arm", "split", "session", "policy_checkpoint", "seed", "success", "fine_class", "collapsed_class", "verified_clear", "independence_group", "payload_state", "camera_alignment_check", "session_start_temperature", "session_end_temperature", "recovery_eligible", "retry_count", "events"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "episode_id": {"type": "string", "minLength": 1},
+    "task": {"enum": ["T1", "T2", "T3"]},
+    "arm": {"enum": [1, 2, 3, 4]},
+    "split": {"enum": ["train", "calibration", "test", "closed_loop"]},
+    "session": {"type": "string", "minLength": 1},
+    "policy_checkpoint": {"type": "string", "minLength": 1},
+    "seed": {"type": "integer"},
+    "success": {"type": "boolean"},
+    "fine_class": {"enum": ["none", "S1", "S2", "S3", "E1", "E2", "E3", "E4", "E5", "E6", "H1", "H2"]},
+    "collapsed_class": {"enum": ["none", "semantic", "execution", "hardware"]},
+    "verified_clear": {"type": "boolean"},
+    "independence_group": {"type": "string", "minLength": 1},
+    "payload_state": {"type": "string", "minLength": 1},
+    "camera_alignment_check": {"enum": ["pass", "fail"]},
+    "session_start_temperature": {"type": "object", "additionalProperties": {"type": "number"}},
+    "session_end_temperature": {"type": "object", "additionalProperties": {"type": "number"}},
+    "grasp_start_frame": {"type": ["integer", "null"], "minimum": 0},
+    "grasp_end_frame": {"type": ["integer", "null"], "minimum": 0},
+    "grasp_duration_s": {"type": ["number", "null"], "minimum": 0},
+    "recovery_eligible": {"type": "boolean"},
+    "retry_count": {"type": "integer", "minimum": 0, "maximum": 2},
+    "disturbance_type": {"type": ["string", "null"]},
+    "disturbance_magnitude_ticks": {"type": ["number", "null"], "minimum": 0},
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["fine_class", "onset_earliest_frame", "onset_latest_frame", "onset_earliest_s", "onset_latest_s", "unrecoverable_earliest_frame", "unrecoverable_latest_frame", "unrecoverable_earliest_s", "unrecoverable_latest_s", "primary"],
+        "properties": {
+          "fine_class": {"enum": ["S1", "S2", "S3", "E1", "E2", "E3", "E4", "E5", "E6", "H1", "H2"]},
+          "onset_earliest_frame": {"type": "integer", "minimum": 0},
+          "onset_latest_frame": {"type": "integer", "minimum": 0},
+          "onset_earliest_s": {"type": "number", "minimum": 0},
+          "onset_latest_s": {"type": "number", "minimum": 0},
+          "unrecoverable_earliest_frame": {"type": "integer", "minimum": 0},
+          "unrecoverable_latest_frame": {"type": "integer", "minimum": 0},
+          "unrecoverable_earliest_s": {"type": "number", "minimum": 0},
+          "unrecoverable_latest_s": {"type": "number", "minimum": 0},
+          "primary": {"type": "boolean"}
+        }
+      }
+    }
+  }
+}

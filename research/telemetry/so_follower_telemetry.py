@@ -73,6 +73,12 @@ class SOFollowerTelemetry(SOFollower):
 
     config_class = SOFollowerTelemetryConfig
     name = "so_follower_telemetry"
+    latest_instance: "SOFollowerTelemetry | None" = None
+
+    def __init__(self, config: SOFollowerTelemetryConfig):
+        super().__init__(config)
+        self.last_capture_timing: dict[str, object] | None = None
+        type(self).latest_instance = self
 
     @property
     def _telemetry_ft(self) -> dict[str, type]:
@@ -90,13 +96,17 @@ class SOFollowerTelemetry(SOFollower):
 
     @check_if_not_connected
     def get_observation(self) -> RobotObservation:
+        observation_start_ns = time.perf_counter_ns()
+        wall_time_ns = time.time_ns()
         start = time.perf_counter()
 
         # Two bus transactions, not four. Position goes through the normal normalized
         # sync_read so its semantics are identical to the base class; everything else
         # comes from one block read over the contiguous SRAM span (addr 56..72).
         positions = self.bus.sync_read("Present_Position")
+        position_read_end_ns = time.perf_counter_ns()
         telemetry = block_read(self.bus, fields=list(TELEMETRY_FIELDS))
+        telemetry_read_end_ns = time.perf_counter_ns()
 
         obs_dict: RobotObservation = {f"{motor}.pos": val for motor, val in positions.items()}
         for field, suffix in TELEMETRY_FIELDS.items():
@@ -106,16 +116,33 @@ class SOFollowerTelemetry(SOFollower):
         dt_ms = (time.perf_counter() - start) * 1e3
         logger.debug(f"{self} read state+telemetry: {dt_ms:.1f}ms")
 
+        camera_timing: dict[str, dict[str, int | None]] = {}
         for cam_key, cam in self.cameras.items():
             if getattr(cam, "use_rgb", True):
                 start = time.perf_counter()
                 obs_dict[cam_key] = cam.read_latest()
+                returned_ns = time.perf_counter_ns()
+                captured = getattr(cam, "latest_timestamp", None)
+                camera_timing[cam_key] = {
+                    "capture_ns": round(captured * 1e9) if captured is not None else None,
+                    "returned_ns": returned_ns,
+                }
                 logger.debug(f"{self} read {cam_key}: {(time.perf_counter() - start) * 1e3:.1f}ms")
 
             if getattr(cam, "use_depth", False):
                 start = time.perf_counter()
                 obs_dict[f"{cam_key}_depth"] = cam.read_latest_depth()
                 logger.debug(f"{self} read {cam_key} depth: {(time.perf_counter() - start) * 1e3:.1f}ms")
+
+        self.last_capture_timing = {
+            "schema_version": 1,
+            "wall_time_ns": wall_time_ns,
+            "observation_start_ns": observation_start_ns,
+            "position_read_end_ns": position_read_end_ns,
+            "telemetry_read_end_ns": telemetry_read_end_ns,
+            "observation_end_ns": time.perf_counter_ns(),
+            "cameras": camera_timing,
+        }
 
         return obs_dict
 

@@ -27,6 +27,19 @@ Reference implementation at freeze time:
 Both at commit `51494b82`. Bug fixes that leave the numbers below unchanged are permitted;
 anything that moves a score is an amendment.
 
+Current exact runtime implementation after the corpus-scale memory fix:
+
+| file | sha256 |
+|---|---|
+| `detectors.py` | `ebb78bcdc30c14d37a36abcf5ca2504f53951be52c7babb1cc8d813f24330dab` |
+| `coverage_index.py` | `b59d2aaa4e975746561531e2a87d2d073aa8d89f0967c9f6762c90f3e5938e00` |
+
+The original `freespace_model.py` hash remains unchanged. The new index computes the same
+exact Euclidean nearest-neighbour statistic and changes no score or threshold. The later
+`detectors.py` hash change makes D0's first frame explicitly unscorable (`NaN`/`None`)
+instead of zero-scored; it does not touch D0r. Four development D0r runs retained identical
+scores to machine precision plus identical scorable and trigger masks.
+
 The hashes identify the implementation, they do not sanctify it. A cosmetic change — a
 rename, a comment, a lint fix — breaks the hash without touching a score. When that happens,
 note the new hash here and move on. Only a change in behaviour is an amendment. (`ruff` from
@@ -204,6 +217,8 @@ hold-out into development data permanently — as happened to trajectory B.
 | date | change | reason |
 |---|---|---|
 | 2026-07-28 | initial freeze | after the trajectory-B specificity failure and the `Goal_Position_2` elimination |
+| 2026-07-28 | memory-safe exact coverage index | projected 270k-frame reference made the original temporary allocation infeasible; four development runs retained identical scores, scorable masks, and triggers |
+| 2026-07-28 | D0 warm-up represented as unscorable | enforced the project-wide no-zero-warm-up invariant; D0r outputs and masks remained identical on four development runs |
 
 ---
 

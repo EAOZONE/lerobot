@@ -8,7 +8,11 @@ Project status: [`DONE.md`](./DONE.md) records completed work and evidence;
 [`NEXT_STEPS.md`](./NEXT_STEPS.md) contains only unfinished gates and forward work.
 Weekly evidence is in [`WEEK1_REPORT.md`](./WEEK1_REPORT.md) and
 [`WEEK2_REPORT.md`](./WEEK2_REPORT.md). The latest detailed handoff is
-[`SESSION_2026-07-27.md`](./SESSION_2026-07-27.md).
+[`SESSION_2026-07-28.md`](./SESSION_2026-07-28.md). For new physical data collection use
+[`ROBOT_DATA_RUNBOOK.md`](./ROBOT_DATA_RUNBOOK.md); the commands below reproduce the
+earlier Week 1 gate.
+The current external dependency boundary is audited in
+[`NEXT_STEPS_BLOCKED_AUDIT_2026-07-28.md`](./NEXT_STEPS_BLOCKED_AUDIT_2026-07-28.md).
 
 ## Where the data comes from
 
@@ -157,6 +161,42 @@ input byte-identical to a plain `so101_follower` recording, while detectors read
 Without it the policy consumes load and current, which confounds RQ2 — the comparison
 assumes the policy under test does not already encode the signal being evaluated.
 
+For Arms 1/2, use `python research/telemetry/train_positions_only.py ...`, not bare
+`lerobot-train`. The wrapper also narrows copied normalization statistics, so truncation
+occurs before a shape-compatible normalizer and is saved in the checkpoint. Arms 3/4 use
+the ordinary trainer intentionally. Exact pilot commands live in `ROBOT_DATA_RUNBOOK.md`.
+
+Before any pilot dataset is trained or backed up, run
+`python research/telemetry/audit_corpus.py <dataset-root> --expected-episodes 30`. It audits
+stored values, statistics, camera artifacts, and every timing sidecar as one gate.
+
+Autonomous evaluations use `rollout_with_telemetry.py`; teleoperated demonstrations use
+`record_with_telemetry.py`. Do not pass a policy to the recording wrapper. Supervised
+recovery logs are checked offline with `audit_recovery.py` before a route can support the
+physical validation decision.
+
+Arm 1/2 checkpoints must pass `audit_positions_checkpoint.py` before deployment. The check
+includes the explicit six-position truncation, normalization tensor widths, camera rename
+map, and action-chunk setting; a six-dimensional model config alone is insufficient.
+
+`recovery_supervisor.py` contains the tested trigger/flush/retry/reinvoke state machine;
+`CLOSED_LOOP_RECOVERY_INTEGRATION.md` defines its future live adapter. It is intentionally
+not active in rollout while recovery routes remain physically unvalidated.
+`RolloutRecoveryLifecycle` in the same module clears inference, RTC queues, interpolation,
+and cached observations in a fixed pause-before-reset order.
+`recovery_action_gate.py` supplies the causal score-before-dispatch boundary and fixed
+policy-tick budget for the future strategy. `RecoveryControlLoop` is the required outer
+boundary so terminal exception frames are counted; these primitives perform no hardware
+I/O on their own.
+`RECOVERY_EVIDENCE_SCHEMA.md` defines stable IDs and the immutable manifest, recovery CSV,
+event, outcome, and relational-audit contract required for any future recovery-enabled
+rollout.
+`RECOVERY_READINESS_GATE.md` defines the final pre-live physical/checkpoint evidence bundle
+and immutable enablement token. The current tree cannot issue one because route and
+ten-reset evidence remain absent.
+`recovery_enablement.py` verifies that token against current files and the actual inference
+engine before any future live recovery objects may be constructed.
+
 ## Common detector interface
 
 `detectors.py` gives every rung one causal score per frame on a shared scale: `1.0` is
@@ -164,6 +204,13 @@ the detector's configured operating threshold. It currently implements elapsed t
 (`duration`), the online conditioned-current slip rule (`d0`), and the free-space
 current residual (`d0r`). `OnlineD0.update(...)` is the stateful 30 Hz interface used
 later by closed-loop control; batch scoring calls that same method frame by frame.
+`recovery_action_gate.py` provides `OnlineD0ObservationScorer`, which pairs live raw
+gripper current with the last normalized gripper command the follower actually accepted.
+It must be reset from a fresh normalized start observation after episode reset or recovery;
+raw servo goal ticks are reserved for recovery replay and are not valid D0 inputs.
+For any future RTC rollout with detector-triggered recovery, use the research-local
+`RecoverySafeRTCInferenceEngine`; upstream RTC pause is non-blocking and cannot by itself
+prevent an already-running inference from refilling a reset queue.
 
 ```bash
 python research/telemetry/detectors.py score research/telemetry/runs/*.csv \
