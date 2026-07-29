@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://eaozone.github.io/lerobot/recovery_validation.schema.json",
+  "$id": "https://lerobot.local/telemetry/recovery_validation.schema.json",
   "title": "Reviewed physical recovery validation record",
   "type": "object",
   "additionalProperties": false,

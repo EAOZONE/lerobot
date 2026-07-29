@@ -46,7 +46,13 @@
           "unrecoverable_latest_frame": {"type": "integer", "minimum": 0},
           "unrecoverable_earliest_s": {"type": "number", "minimum": 0},
           "unrecoverable_latest_s": {"type": "number", "minimum": 0},
-          "primary": {"type": "boolean"}
+          "primary": {"type": "boolean"},
+          "trigger_detector": {"type": ["string", "null"], "minLength": 1},
+          "trigger_score": {"type": ["number", "null"]},
+          "trigger_threshold": {"type": ["number", "null"]},
+          "recovery_outcome": {
+            "enum": [null, "converted_failure", "disrupted_success", "failed_safely", "moved_unsafely"]
+          }
         }
       }
     }
